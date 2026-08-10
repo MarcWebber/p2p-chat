@@ -5,6 +5,9 @@
 完整技术文档：
 
 - [文档入口](docs/README.md)
+- [WebRTC 与加密 P2P 实战分享](docs/field-guide.md)
+- [VPS、Socket.IO、Vercel 和 TURN](docs/network-and-deployment.md)
+- [项目最终复盘](docs/project-retrospective.md)
 - [系统架构与文件结构](docs/architecture.md)
 - [WebRTC、双工通道与加密](docs/webrtc-security.md)
 - [TURN 配置手册](docs/turn-configuration.md)
@@ -43,7 +46,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 ```
 
-Supabase 只用于交换 SDP 和 ICE 信令，聊天内容不经过 Supabase。生产环境还应配置 TURN 服务，解决严格 NAT 或企业防火墙下无法直连的问题。
+Supabase 只用于交换 SDP 和 ICE 信令，聊天内容不经过 Supabase。当前生产项目已经配置 Cloudflare TURN 短时凭证，直连失败时可切换到加密中继；自建部署仍应单独配置 TURN。
 
 ## 部署到 Vercel
 
@@ -61,6 +64,6 @@ Next.js 构建命令和输出目录使用 Vercel 默认值即可。
 - 双方必须同时在线才能收到实时消息；离线时发送的消息只保留在发送方本机。
 - “仅两个人”目前由房主运行时连接锁实现，刷新房主页面后会重新开放访客槽位。
 - 邀请链接的 URL fragment 包含会话秘密，拿到完整链接的人可能冒充访客。
-- 当前使用公共 STUN，没有 TURN 兜底。
+- 当前已接入 Cloudflare TURN 短时凭证作为直连失败兜底；中国大陆稳定性仍需要独立的网络与部署方案。
 
-正式版本应增加持久化成员公钥、一次性邀请核销、加密离线信箱、密钥恢复和 TURN 服务。
+正式版本应增加持久化成员公钥、一次性邀请核销、加密离线信箱、密钥恢复、DataChannel 背压和多地域 TURN 监控。

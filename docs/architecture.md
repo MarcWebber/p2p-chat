@@ -1,5 +1,9 @@
 # 系统架构与文件结构
 
+![TwoOnly 架构总览](assets/twoonly-architecture-overview.png)
+
+这张图用于快速理解组件位置；下方 Mermaid 图用于准确表达数据流。总览图由 OpenAI ImageGen 生成。
+
 ## 1. 总体架构
 
 ```mermaid
@@ -151,10 +155,16 @@ twoonly/
 │       └── iceConfig.ts            # STUN/TURN 配置
 ├── docs/
 │   ├── README.md                   # 文档索引
+│   ├── field-guide.md              # WebRTC 原理与项目实战主线
+│   ├── network-and-deployment.md   # VPS、Socket.IO 与部署选择
+│   ├── project-retrospective.md    # 故障、验收与最终复盘
 │   ├── architecture.md             # 本文
+│   ├── code-metrics.md             # 代码规模和复杂度基线
 │   ├── deployment-operations.md    # Supabase/Vercel/运维
 │   ├── turn-configuration.md       # TURN 配置
-│   └── webrtc-security.md          # 通道与安全实现
+│   ├── webrtc-security.md          # 通道与安全实现
+│   └── assets/
+│       └── twoonly-architecture-overview.png
 ├── public/
 │   ├── og.jpg                      # 分享卡片
 │   └── og.png                      # 分享卡片源图

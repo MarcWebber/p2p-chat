@@ -2,13 +2,29 @@
 
 TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建并部署到 Vercel；Supabase Realtime 只负责让两个浏览器交换 WebRTC 建连所需的信令；文字、图片和语音经浏览器本地 AES-GCM 加密后，通过 WebRTC DataChannel 传输，并以密文保存在各自设备的 `localStorage`。
 
-## 文档导航
+## 推荐阅读顺序
+
+如果你想从原理一直读到实战收尾，建议按下面三篇走：
+
+1. [从一条邀请链接到一条加密 P2P 通道](field-guide.md)：用 TwoOnly 串起信令、ICE、STUN、TURN、DataChannel、AES-GCM、本地历史和重连。
+2. [VPS、Socket.IO、Vercel 和 TURN](network-and-deployment.md)：解释常驻 Node 服务、托管信令、平台 Function 和中继服务分别适合放什么。
+3. [TwoOnly 项目复盘](project-retrospective.md)：记录模块化过程、真实故障、生产部署、验收证据和项目边界。
+
+这三篇偏经验分享，代码很少，流程图比较多。想直接查配置或实现细节，再进入下面的专题手册。
+
+## 专题手册
 
 - [系统架构与文件结构](architecture.md)：组件边界、消息流、双人限制和源码目录。
 - [代码规模与复杂度基线](code-metrics.md)：当前行数、目录分布、复杂度代理和重复统计方法。
 - [WebRTC、双工通道与加密](webrtc-security.md)：Offer/Answer、ICE、STUN/TURN、DataChannel、AES-GCM、分片、威胁边界。
 - [TURN 配置手册](turn-configuration.md)：托管服务和 Coturn 自建方式、端口、证书、Vercel 环境变量与验收。
 - [Supabase、Vercel 与部署运维](deployment-operations.md)：环境变量、Supabase 配置、Vercel 部署、测试和国内访问方案。
+
+## 一张图看懂
+
+![TwoOnly 架构总览](assets/twoonly-architecture-overview.png)
+
+图片负责快速建立空间感，Mermaid 图负责表达精确时序；发生差异时，以源码和专题手册为准。
 
 ## 当前实现摘要
 
@@ -21,7 +37,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 | 历史记录 | 每台设备的 `localStorage`，仅保存 `{id, iv, data}` 密文，最多 200 条 |
 | 消息类型 | 文字、图片、语音；图片/语音单条上限 1.5 MB |
 | 大消息处理 | 加密后 JSON 按 12,000 字符分片，在接收端重组并解密 |
-| 部署 | Vercel 静态页面与短时 TURN 凭证接口；Supabase 新加坡区提供 WebSocket 信令 |
+| 部署 | Vercel 静态页面与短时 Cloudflare TURN 凭证接口；Supabase 新加坡区提供 WebSocket 信令 |
 
 ## 必须理解的边界
 
@@ -40,3 +56,5 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 - [W3C Web Crypto API](https://www.w3.org/TR/WebCryptoAPI/)
 - [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast)
 - [Vercel 环境变量](https://vercel.com/docs/environment-variables)
+- [Socket.IO 工作原理](https://socket.io/docs/v4/how-it-works/)
+- [Cloudflare TURN 短时凭证](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
