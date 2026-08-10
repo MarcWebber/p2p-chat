@@ -120,6 +120,12 @@ Route Handler 最初用请求 URL 的内部 Origin 和浏览器 `Origin` 直接�
 
 随后强制生产部署，线上首页和 TURN 接口均为 200。旧部署的 503 仍会出现在一小时日志窗口里，所以排查日志时必须按 deployment ID 区分，而不能只看项目级时间范围。
 
+### 6. Guest 显示已连接，Host 却卡在自动重连
+
+这不是 TURN “只连通了一边”，而是客户端把一次瞬时 `RTCPeerConnection.disconnected` 立即写进 UI；连接在重连定时器触发前恢复后，定时器因为 DataChannel 仍为 `open` 而直接返回，却没有把 Host 状态恢复为 `connected`。
+
+修复后，瞬时断开先进入 2.5 秒波动确认期；PeerConnection 或 DataChannel 恢复时统一清理重连定时器并重新标记连接成功，持续断开才创建新一轮协商。同时，TURN 状态改为读取实际选中的 Candidate Pair，而不是只要候选池中出现过 relay 就显示正在中继。
+
 ## 最终验收是怎么做的
 
 ```mermaid
@@ -198,4 +204,3 @@ TwoOnly 没有试图成为一个完整即时通讯产品。它完成的是一条
 ```
 
 它最有价值的部分，不是某一段 API 调用，而是这些边界在真实部署和故障中都被走过一遍。到这里，这个项目可以正式收尾了。
-

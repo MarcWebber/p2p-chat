@@ -74,7 +74,7 @@ NEXT_PUBLIC_STUN_URLS=stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302
 本项目的可执行配置步骤见 [TURN 配置手册](turn-configuration.md)。
 
 
-页面通过 `RTCPeerConnection.getStats()` 检查本地候选类型：使用 `relay` 时显示“TURN 加密中继”，否则显示“WebRTC 点对点直连”。该文字是运行时观测，不代表所有未来数据包永远不会切换路径。
+页面通过 `RTCPeerConnection.getStats()` 找到当前 transport 实际选中的 Candidate Pair，再沿 `localCandidateId` / `remoteCandidateId` 检查候选类型：选中路径任一端是 `relay` 时显示“TURN 加密中继”，否则显示“WebRTC 点对点直连”。如果浏览器暂时没有暴露可判定的选中候选对，则只显示“WebRTC 已连接”，不会因为候选池里曾收集到 relay 就误报正在使用 TURN。该文字是运行时观测，不代表所有未来数据包永远不会切换路径。
 
 ## 5. 应用层 AES-GCM
 

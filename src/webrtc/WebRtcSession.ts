@@ -15,8 +15,52 @@ type SessionOptions = {
 };
 
 const RECONNECT_DELAY_MS = 800;
+const DISCONNECTED_GRACE_MS = 2_500;
 const ANNOUNCE_INTERVAL_MS = 1_500;
 const SIGNAL_WARNING_DELAY_MS = 3_500;
+
+type ConnectionStatsReport = {
+  id: string;
+  type: string;
+  state?: string;
+  nominated?: boolean;
+  selected?: boolean;
+  selectedCandidatePairId?: string;
+  localCandidateId?: string;
+  remoteCandidateId?: string;
+  candidateType?: string;
+};
+
+function getSelectedCandidatePair(stats: RTCStatsReport) {
+  let selectedPairId = "";
+  let selectedPair: ConnectionStatsReport | null = null;
+  let nominatedPair: ConnectionStatsReport | null = null;
+
+  stats.forEach((report) => {
+    const item = report as ConnectionStatsReport;
+    if (item.type === "transport" && item.selectedCandidatePairId) {
+      selectedPairId = item.selectedCandidatePairId;
+    }
+    if (item.type !== "candidate-pair") return;
+    if (item.selected) selectedPair = item;
+    else if (item.nominated && item.state === "succeeded") nominatedPair = item;
+  });
+
+  if (selectedPairId) {
+    return (stats.get(selectedPairId) as ConnectionStatsReport | undefined) ?? null;
+  }
+  return selectedPair ?? nominatedPair;
+}
+
+function getConnectionMode(stats: RTCStatsReport) {
+  const pair = getSelectedCandidatePair(stats);
+  if (!pair?.localCandidateId || !pair.remoteCandidateId) return "unknown";
+  const local = stats.get(pair.localCandidateId) as ConnectionStatsReport | undefined;
+  const remote = stats.get(pair.remoteCandidateId) as ConnectionStatsReport | undefined;
+  return local?.candidateType === "relay" || remote?.candidateType === "relay"
+    ? "relay"
+    : "direct";
+}
 
 export class WebRtcSession {
   private readonly role: Role;
@@ -99,7 +143,7 @@ export class WebRtcSession {
       .catch((error: unknown) => this.handleNegotiationFailure(error));
   };
 
-  reconnect(automatic = false) {
+  reconnect(automatic = false, delayMs = RECONNECT_DELAY_MS) {
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
     if (this.signalWarningTimer !== undefined) window.clearTimeout(this.signalWarningTimer);
     this.signalWarningTimer = undefined;
@@ -107,7 +151,11 @@ export class WebRtcSession {
 
     const reconnectNow = () => {
       this.reconnectTimer = undefined;
-      if (this.disposed || this.dataChannel?.readyState === "open") return;
+      if (this.disposed) return;
+      if (this.dataChannel?.readyState === "open" && this.peer?.connectionState === "connected") {
+        this.markConnected();
+        return;
+      }
 
       this.activeNegotiationId = "";
       this.handledOfferId = "";
@@ -131,7 +179,7 @@ export class WebRtcSession {
       }
     };
 
-    if (automatic) this.reconnectTimer = window.setTimeout(reconnectNow, RECONNECT_DELAY_MS);
+    if (automatic) this.reconnectTimer = window.setTimeout(reconnectNow, delayMs);
     else reconnectNow();
   }
 
@@ -193,7 +241,9 @@ export class WebRtcSession {
     };
     peer.onconnectionstatechange = () => {
       if (this.peer !== peer) return;
-      if (peer.connectionState === "failed") {
+      if (peer.connectionState === "connected") {
+        this.markConnected();
+      } else if (peer.connectionState === "failed") {
         this.onConnectionChange(
           "disconnected",
           this.turnConfigured ? "连接失败，正在自动重连" : "直连失败（未配置 TURN）",
@@ -205,9 +255,9 @@ export class WebRtcSession {
         );
         this.reconnect(true);
       } else if (peer.connectionState === "disconnected") {
-        this.onConnectionChange("disconnected", "连接已断开，正在自动重连");
-        this.onNotice("连接中断，正在重新握手；也可以点击“立即重连”。");
-        this.reconnect(true);
+        this.onConnectionChange("connecting", "连接波动，正在确认");
+        this.onNotice("连接暂时中断；若未自动恢复，系统会重新握手。");
+        this.reconnect(true, DISCONNECTED_GRACE_MS);
       }
     };
 
@@ -223,13 +273,7 @@ export class WebRtcSession {
     this.dataChannel = channel;
     channel.onopen = () => {
       if (this.dataChannel !== channel) return;
-      if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = undefined;
-      this.restartRequested = false;
-      this.announceEnabled = false;
-      this.onConnectionChange("connected", "WebRTC 点对点直连");
-      this.onNotice("");
-      void this.inspectConnectionMode();
+      this.markConnected();
     };
     channel.onclose = () => {
       if (this.dataChannel !== channel) return;
@@ -250,16 +294,38 @@ export class WebRtcSession {
     };
   }
 
+  private markConnected() {
+    if (this.disposed || this.dataChannel?.readyState !== "open") return;
+    if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
+    if (this.signalWarningTimer !== undefined) window.clearTimeout(this.signalWarningTimer);
+    this.reconnectTimer = undefined;
+    this.signalWarningTimer = undefined;
+    this.signalWarningVisible = false;
+    this.restartRequested = false;
+    this.announceEnabled = false;
+    this.onConnectionChange("connected", "WebRTC 已连接");
+    this.onNotice("");
+    void this.inspectConnectionMode();
+  }
+
   private async inspectConnectionMode() {
     const peer = this.peer;
     if (!peer) return;
-    const stats = await peer.getStats();
-    let relay = false;
-    stats.forEach((report) => {
-      if (report.type === "local-candidate" && report.candidateType === "relay") relay = true;
-    });
-    if (this.peer === peer) {
-      this.onConnectionChange("connected", relay ? "TURN 加密中继" : "WebRTC 点对点直连");
+    try {
+      const mode = getConnectionMode(await peer.getStats());
+      if (this.peer !== peer || this.dataChannel?.readyState !== "open") return;
+      this.onConnectionChange(
+        "connected",
+        mode === "relay"
+          ? "TURN 加密中继"
+          : mode === "direct"
+            ? "WebRTC 点对点直连"
+            : "WebRTC 已连接",
+      );
+    } catch {
+      if (this.peer === peer && this.dataChannel?.readyState === "open") {
+        this.onConnectionChange("connected", "WebRTC 已连接");
+      }
     }
   }
 
