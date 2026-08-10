@@ -60,6 +60,7 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 | --- | --- | --- |
 | `src/chat` | 领域类型、React 状态和用例编排 | WebRTC/Supabase 的底层细节 |
 | `src/crypto` | 随机值、安全码、AES-GCM 加解密 | 保存历史、发送网络消息 |
+| `src/diagnostics` | 建连日志、脱敏、内存环形缓冲和 Console 输出 | 持久化日志、记录密钥或消息内容 |
 | `src/signal` | 信令类型校验、Supabase/BroadcastChannel 适配 | 聊天正文、PeerConnection 生命周期 |
 | `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和密文分片传输 | React UI、本地历史 |
 | `src/storage` | `localStorage` 密文历史、`sessionStorage` 发送方身份 | 加解密、Supabase Database/Storage |
@@ -118,6 +119,8 @@ https://站点/?room=<roomId>&role=guest#<secret>
 ```text
 twoonly/
 ├── app/
+│   ├── api/turn-credentials/
+│   │   └── route.ts                # Cloudflare TURN 短时凭据与请求追踪
 │   ├── globals.css                 # 全局与响应式 UI
 │   ├── layout.tsx                  # 元数据和根布局
 │   └── page.tsx                    # 首页入口
@@ -129,6 +132,8 @@ twoonly/
 │   │   └── useTwoOnlyChat.ts       # 状态与用例协调器
 │   ├── crypto/
 │   │   └── messageCrypto.ts        # 随机值、安全码、AES-GCM
+│   ├── diagnostics/
+│   │   └── connectionDiagnostics.ts # 脱敏建连日志与内存缓冲
 │   ├── media/
 │   │   ├── files.ts                # 文件限制与 Data URL
 │   │   └── useAudioRecorder.ts     # 录音生命周期
@@ -146,6 +151,7 @@ twoonly/
 │   │   ├── LandingScreen.tsx       # 首页与 Wiki
 │   │   ├── ChatScreen.tsx          # 聊天页组合
 │   │   ├── ChatHeader.tsx          # 状态与房间操作
+│   │   ├── ConnectionDiagnosticsPanel.tsx # 六阶段连接诊断面板
 │   │   ├── ChatSidebar.tsx         # 当前会话摘要
 │   │   ├── MessageList.tsx         # 消息展示
 │   │   ├── MessageComposer.tsx     # 文字/图片/语音输入
@@ -162,6 +168,7 @@ twoonly/
 │   ├── code-metrics.md             # 代码规模和复杂度基线
 │   ├── deployment-operations.md    # Supabase/Vercel/运维
 │   ├── turn-configuration.md       # TURN 配置
+│   ├── faq.md                      # 常见问题与连接排障
 │   ├── webrtc-security.md          # 通道与安全实现
 │   └── assets/
 │       └── twoonly-architecture-overview.png

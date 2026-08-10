@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useSta
 
 import type { ChatMessage, ConnectionState, EncryptedWire, MessageKind, Role } from "@/src/chat/types";
 import { createMessageCrypto, createSafetyCode, randomToken, type MessageCrypto } from "@/src/crypto/messageCrypto";
+import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
 import { MAX_FILE_BYTES, readAsDataUrl } from "@/src/media/files";
 import { useAudioRecorder } from "@/src/media/useAudioRecorder";
 import { createGuestInviteUrl, createHostRoom, createRoomUrl, readRoomInvitation } from "@/src/room/invitation";
@@ -21,6 +22,7 @@ export function useTwoOnlyChat() {
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState(false);
   const [ready, setReady] = useState(false);
+  const [diagnostics] = useState(() => new ConnectionDiagnostics());
 
   const senderIdRef = useRef("");
   const sessionRef = useRef<WebRtcSession | null>(null);
@@ -84,17 +86,45 @@ export function useTwoOnlyChat() {
       setRole(invitation.role);
       setRoomId(invitation.roomId);
       setSecret(invitation.secret);
+      diagnostics.report({
+        stage: "client",
+        code: "client.invitation.ready",
+        level: "success",
+        message: "邀请信息解析完成",
+        details: { role: invitation.role, online: navigator.onLine },
+        dedupeKey: `invitation-ready-${invitation.role}`,
+      });
+    } else {
+      diagnostics.report({
+        stage: "client",
+        code: "client.landing.ready",
+        message: "未检测到房间邀请，显示首页",
+        details: { online: navigator.onLine },
+        dedupeKey: "landing-ready",
+      });
     }
     setReady(true);
-  }, []);
+  }, [diagnostics]);
 
   useEffect(() => {
     if (!role || !roomId || !secret) return;
 
     let active = true;
     let transport: SignalTransport | null = null;
+    diagnostics.report({
+      stage: "client",
+      code: "client.bootstrap.start",
+      message: "开始初始化加密聊天连接",
+      details: { role, online: navigator.onLine },
+    });
     const messageCrypto = createMessageCrypto(secret);
     messageCryptoRef.current = messageCrypto;
+    diagnostics.report({
+      stage: "client",
+      code: "client.crypto.ready",
+      level: "success",
+      message: "本地消息加密器已就绪",
+    });
 
     const acceptWire = async (wire: EncryptedWire) => {
       try {
@@ -114,7 +144,7 @@ export function useTwoOnlyChat() {
     };
 
     let session: WebRtcSession | null = null;
-    void resolveIceConfiguration().then(({ configuration, turnConfigured }) => {
+    void resolveIceConfiguration(diagnostics.report).then(({ configuration, turnConfigured }) => {
       if (!active) return;
       const createdSession = new WebRtcSession({
         role,
@@ -125,6 +155,7 @@ export function useTwoOnlyChat() {
         onWire: (wire) => void acceptWire(wire),
         onConnectionChange: updateConnection,
         onNotice: setNotice,
+        onDiagnostic: diagnostics.report,
       });
       session = createdSession;
       sessionRef.current = createdSession;
@@ -132,6 +163,7 @@ export function useTwoOnlyChat() {
       transport = createSignalTransport({
         roomId,
         onMessage: createdSession.handleSignal,
+        onDiagnostic: diagnostics.report,
         onStatus: (status) => {
           if (status === "subscribed") createdSession.onSignalReady();
           else createdSession.onSignalUnavailable();
@@ -155,21 +187,44 @@ export function useTwoOnlyChat() {
 
     return () => {
       active = false;
+      diagnostics.report({
+        stage: "client",
+        code: "client.bootstrap.dispose",
+        message: "释放当前房间的连接资源",
+      });
       transport?.dispose();
       session?.dispose();
       if (transportRef.current === transport) transportRef.current = null;
       if (sessionRef.current === session) sessionRef.current = null;
       if (messageCryptoRef.current === messageCrypto) messageCryptoRef.current = null;
     };
-  }, [role, roomId, secret, updateConnection]);
+  }, [diagnostics, role, roomId, secret, updateConnection]);
 
-  const reconnect = useCallback(() => sessionRef.current?.reconnect(false), []);
+  const reconnect = useCallback(() => {
+    diagnostics.report({
+      stage: "client",
+      code: "client.reconnect.requested",
+      message: "客户端请求立即重新握手",
+      details: { online: navigator.onLine },
+    });
+    sessionRef.current?.reconnect(false);
+  }, [diagnostics]);
   const clearNotice = useCallback(() => setNotice(""), []);
 
   useEffect(() => {
     window.addEventListener("online", reconnect);
-    return () => window.removeEventListener("online", reconnect);
-  }, [reconnect]);
+    const onOffline = () => diagnostics.report({
+      stage: "client",
+      code: "client.network.offline",
+      level: "warn",
+      message: "浏览器报告网络离线",
+    });
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", reconnect);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, [diagnostics, reconnect]);
 
   useEffect(() => () => {
     if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
@@ -199,7 +254,13 @@ export function useTwoOnlyChat() {
     setDraft("");
     setCopied(false);
     setNotice("");
-  }, [cancelRecording]);
+    diagnostics.report({
+      stage: "client",
+      code: "client.room.created",
+      message: "已创建新的房主会话",
+      details: { role: invitation.role },
+    });
+  }, [cancelRecording, diagnostics]);
 
   const createFreshRoom = useCallback(() => {
     if (!window.confirm("创建新聊天将离开当前会话；已保存的记录仍保留在本机。继续吗？")) return;
@@ -270,6 +331,7 @@ export function useTwoOnlyChat() {
     copyInvite,
     clearLocalHistory,
     reconnect,
+    diagnostics,
   };
 }
 

@@ -1,6 +1,8 @@
 import type { ChatMessage, ConnectionState, Role } from "@/src/chat/types";
+import type { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
 import { ChatHeader } from "@/src/ui/ChatHeader";
 import { ChatSidebar } from "@/src/ui/ChatSidebar";
+import { ConnectionDiagnosticsPanel } from "@/src/ui/ConnectionDiagnosticsPanel";
 import { MessageComposer } from "@/src/ui/MessageComposer";
 import { MessageList } from "@/src/ui/MessageList";
 
@@ -14,6 +16,7 @@ type ChatScreenProps = {
   copied: boolean;
   isRecording: boolean;
   safetyCode: string;
+  diagnostics: ConnectionDiagnostics;
   setDraft: (draft: string) => void;
   clearNotice: () => void;
   createFreshRoom: () => void;
@@ -46,6 +49,7 @@ export function ChatScreen(props: ChatScreenProps) {
           onReconnect={props.reconnect}
           onCreateRoom={props.createFreshRoom}
         />
+        <ConnectionDiagnosticsPanel role={props.role} diagnostics={props.diagnostics} />
         <MessageList
           role={props.role}
           connection={props.connection}

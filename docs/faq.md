@@ -18,6 +18,83 @@ flowchart LR
 
 前一层成功，只能说明前一层，不自动证明后一层。例如 `/api/turn-credentials` 返回 `200`，只能说明浏览器拿到了地址和临时账号；它不能证明当前网络能连上 TURN，也不能证明 ICE 最终选中了中继路径。
 
+## 页面上的“连接诊断”怎么用？
+
+聊天页面右上角现在有一条默认折叠的“连接诊断”。展开后会看到六个阶段：
+
+```text
+凭据 → 信令 → Hello → SDP → ICE → 通道
+```
+
+每条日志同时写入浏览器 Console，统一使用下面的前缀：
+
+```text
+[twoonly][trace-id][时间][阶段][事件代码]
+```
+
+面板最多保留本页最近 200 条日志，列表显示最近 60 条。重复的 Hello 和 Candidate 会在页面中合并为 `×N`，Console 仍保留每次事件。点击“复制日志”即可把脱敏后的完整记录发给排障人员；它不会写入 `localStorage`，刷新即清空。
+
+日志刻意不记录完整邀请链接、fragment secret、安全码、房间 ID、TURN username/credential、Supabase key、完整 SDP、原始 ICE Candidate/IP 或消息内容。不要为了排障再手动把这些敏感数据粘贴进公开聊天。
+
+### Guest 正常建连的期望顺序
+
+```text
+client.invitation.ready
+credentials.request.start
+credentials.success               HTTP 200，取得临时 TURN 配置
+credentials.ready                 source=dynamic，turnConfigured=true
+signal.subscribe.start
+signal.subscribed                 Supabase Realtime 已订阅
+hello.sent / hello.ack             发出 Hello，服务端确认 ok
+sdp.offer.received
+sdp.offer.remote_applied
+sdp.answer.sent / sdp.answer.ack
+ice.gathering.* / ice.candidate.*
+ice.connected 或 ice.completed
+data.open
+ice.selected_pair                 direct 或 relay
+```
+
+### Host 正常建连的期望顺序
+
+```text
+client.invitation.ready
+credentials.request.start
+credentials.success / credentials.ready
+signal.subscribed
+hello.received                    收到 Guest 的 Hello
+sdp.offer.created / sdp.offer.ack
+sdp.answer.received
+sdp.answer.applied
+ice.connected 或 ice.completed
+data.open
+ice.selected_pair
+```
+
+页面上的阶段灯只负责快速定位，排查时仍应复制完整日志。房主在访客尚未上线时，Hello、SDP、ICE 和通道保持“等待”是正常现象。
+
+### 日志停在哪里，应该查哪里？
+
+| 最后出现的关键日志 | 说明 | 下一步 |
+| --- | --- | --- |
+| `credentials.request.start`，10 秒内没有结果 | 浏览器到 Vercel 凭据接口可能悬挂 | 看 Network 中该请求的 DNS、TLS、状态和耗时 |
+| `credentials.request.timeout` | 客户端已主动中止凭据请求 | 查 `/api/turn-credentials` 可达性；客户端会继续以静态配置或 STUN-only 启动信令 |
+| `credentials.response.http_error` 且 `status=502` | 浏览器已到 Vercel，Vercel 到 Cloudflare 或 Cloudflare 配置失败 | 用 `requestId` 对照 Vercel Function 日志 |
+| `credentials.success` 后没有 `signal.subscribed` | TURN 凭据正常，Supabase Realtime WebSocket 未完成订阅 | 查 Supabase 域名、WSS、代理和运营商网络 |
+| Guest 有 `hello.ack`，Host 没有 `hello.received` | Guest 已把广播交给信令服务，但 Host 没收到 | 检查 Host 是否在线、双方房间链接是否一致、Realtime 广播是否投递 |
+| Host 有 `hello.received`，没有 `sdp.offer.created` | 问题位于 Host 的 WebRTC/Offer 创建 | 查紧随其后的 `sdp.negotiation.failed` |
+| Offer/Answer 完整，没有 relay candidate | SDP 信令正常，当前设备无法从 TURN 获得 relay 地址 | 分别测试 TURN UDP、TCP、TLS 443 |
+| 已有 relay candidate，但出现 `ice.failed` | TURN allocation 可能成功，但 ICE connectivity check 没建成可用路径 | 查 Candidate 轮次、端口、网络丢包和服务端流量 |
+| `ice.connected` 后没有 `data.open` | ICE 已连通，问题位于 SCTP/DataChannel 层 | 比对两端 DataChannel 与 PeerConnection 状态 |
+
+### `websocket connection failed` 和 `transport failure` 指向哪里？
+
+当前依赖的 Supabase Realtime SDK 会把某些底层 Channel 传输错误归一化为 `channel error: transport failure`。如果它紧跟在浏览器的 `websocket connection failed` 后面，两条通常描述的是同一次 **Supabase 信令 WebSocket** 失败，不是 TURN relay 失败。
+
+TwoOnly 的信令是在 ICE 配置解析完成后启动的。因此，只要已经看到 `signal.subscribe.start` 或 Supabase WebSocket 连接尝试，就说明凭据步骤已经结束——可能是 `credentials.success`，也可能是失败后 `credentials.ready source=stun-only`。新增日志正是用来消除这层猜测。
+
+浏览器侧凭据请求现在有 10 秒超时。即使某个网络访问不了 `/api/turn-credentials`，页面也会明确记录 timeout，并继续启动 Supabase 信令，不会无限卡在最基础的一环。Vercel Route 同时生成 `requestId`；成功和失败响应都会带 `X-TwoOnly-Request-Id`，服务端日志可用同一 ID 对照浏览器记录。
+
 ## 如何确定对方能够访问 TURN？
 
 不要只在房主设备测试。房主和访客应当分别在各自真实网络完成下面的检查。
