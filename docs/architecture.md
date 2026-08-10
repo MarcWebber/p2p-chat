@@ -36,7 +36,7 @@ flowchart LR
   BP -. "候选地址发现 / 必要时中继" .-> ICE
 ```
 
-Vercel 只提供静态网页与资源，不参与消息转发。Supabase 只在 WebRTC 建连阶段交换信令。连接成功后，应用消息走 DataChannel；代码不会把聊天正文写入 Supabase Database、Storage 或 Vercel Function。
+Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务端 Cloudflare Token 生成短时 TURN 配置。该 Function 不接收聊天正文。Supabase 只在 WebRTC 建连阶段交换信令；连接成功后，应用消息走 DataChannel，代码不会把聊天正文写入 Supabase Database、Storage 或 Vercel Function。
 
 ## 2. 运行时组件
 
@@ -46,7 +46,7 @@ Vercel 只提供静态网页与资源，不参与消息转发。Supabase 只在 
 - `app/page.tsx`：渲染唯一的聊天客户端组件。
 - `app/globals.css`：启动页、桌面聊天、移动端聊天、连接状态和操作反馈样式。
 
-整个页面可静态预渲染。WebRTC、Web Crypto、录音、文件读取和本地存储都在浏览器端执行。
+页面本身可静态预渲染；TURN credential Route Handler 按请求动态运行。WebRTC、Web Crypto、录音、文件读取和本地存储仍全部在浏览器端执行。
 
 ### 聊天客户端
 

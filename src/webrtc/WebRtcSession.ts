@@ -2,11 +2,12 @@ import type { ConnectionState, EncryptedWire, Role } from "@/src/chat/types";
 import { randomToken } from "@/src/crypto/messageCrypto";
 import { encodeEncryptedWire, EncryptedWireAssembler } from "@/src/protocol/wireProtocol";
 import type { OutgoingSignal, SignalMessage } from "@/src/signal/types";
-import { HAS_TURN_CONFIGURATION, ICE_CONFIGURATION } from "@/src/webrtc/iceConfig";
 
 type SessionOptions = {
   role: Role;
   senderId: string;
+  iceConfiguration: RTCConfiguration;
+  turnConfigured: boolean;
   sendSignal: (message: SignalMessage) => void;
   onWire: (wire: EncryptedWire) => void;
   onConnectionChange: (state: ConnectionState, mode: string) => void;
@@ -20,6 +21,8 @@ const SIGNAL_WARNING_DELAY_MS = 3_500;
 export class WebRtcSession {
   private readonly role: Role;
   private readonly senderId: string;
+  private readonly iceConfiguration: RTCConfiguration;
+  private readonly turnConfigured: boolean;
   private readonly sendSignalMessage: SessionOptions["sendSignal"];
   private readonly onWire: SessionOptions["onWire"];
   private readonly onConnectionChange: SessionOptions["onConnectionChange"];
@@ -45,6 +48,8 @@ export class WebRtcSession {
   constructor(options: SessionOptions) {
     this.role = options.role;
     this.senderId = options.senderId;
+    this.iceConfiguration = options.iceConfiguration;
+    this.turnConfigured = options.turnConfigured;
     this.sendSignalMessage = options.sendSignal;
     this.onWire = options.onWire;
     this.onConnectionChange = options.onConnectionChange;
@@ -175,7 +180,7 @@ export class WebRtcSession {
     previousPeer?.close();
     this.pendingIce = [];
 
-    const peer = new RTCPeerConnection(ICE_CONFIGURATION);
+    const peer = new RTCPeerConnection(this.iceConfiguration);
     this.peer = peer;
     peer.onicecandidate = (event) => {
       if (this.peer !== peer || !event.candidate) return;
@@ -191,10 +196,10 @@ export class WebRtcSession {
       if (peer.connectionState === "failed") {
         this.onConnectionChange(
           "disconnected",
-          HAS_TURN_CONFIGURATION ? "连接失败，正在自动重连" : "直连失败（未配置 TURN）",
+          this.turnConfigured ? "连接失败，正在自动重连" : "直连失败（未配置 TURN）",
         );
         this.onNotice(
-          HAS_TURN_CONFIGURATION
+          this.turnConfigured
             ? "直连和 TURN 中继均未建立，正在重新握手。"
             : "当前仅配置了 STUN；严格 NAT 或企业网络需要 TURN 中继。",
         );

@@ -1,6 +1,6 @@
 # TURN 配置手册
 
-本文给出两种可以直接用于 TwoOnly 的方案：购买托管 TURN，或在一台有公网 IP 的服务器上自建 Coturn。完成后只需要把 TURN 地址和凭证写入 Vercel 环境变量，无需修改聊天代码。
+本文给出两种可以直接用于 TwoOnly 的方案：Cloudflare 托管 TURN，或在一台有公网 IP 的服务器上自建 Coturn。Cloudflare 使用服务端短时凭证；Coturn 仍可使用静态前端变量作为小规模兜底。
 
 ## 1. TURN 在项目中的作用
 
@@ -31,10 +31,10 @@ WebRTC 官方同样建议为无法直接建立连接的场景提供 TURN，参�
 
 ### 2.1 当前推荐的落地顺序
 
-本项目目前只配置了 STUN，生产环境没有 `NEXT_PUBLIC_TURN_*`。可以按投入从低到高选择：
+项目已经实现 `/api/turn-credentials`，可以按投入从低到高选择：
 
 1. **立即验证**：用专属 Coturn 长期用户名/随机密码接入现有的三个 `NEXT_PUBLIC_TURN_*` 变量。代码无需再改，但凭证会进入浏览器包，只适合小规模试运行。
-2. **正式托管**：使用 Cloudflare Realtime TURN 等托管服务，并新增一个 Vercel 服务端接口生成短时凭证。TURN key 和 API token 必须只放在服务端，浏览器只接收临时 `iceServers`。
+2. **正式托管**：使用 Cloudflare Realtime TURN；现有 Vercel Route Handler 使用服务端 TURN key 和 API token 生成 24 小时短时凭证，浏览器只接收临时 `iceServers`。
 3. **国内优先**：在目标用户附近自建 Coturn，使用 `use-auth-secret` 和短时 HMAC 凭证；至少覆盖 UDP 3478、TCP 3478 和 TLS 443，并按电信、联通、移动分别实测。
 
 Cloudflare 的官方接入文档是 [Generate Credentials](https://developers.cloudflare.com/realtime/turn/generate-credentials/)。其凭证生成接口适合由后端调用，不应把 TURN key 暴露给浏览器。Cloudflare Realtime TURN 的全球网络不包含中国网络，因此它适合快速验证和海外访问，不应被当作中国大陆稳定性的保证。
@@ -132,7 +132,7 @@ sudo journalctl -u coturn -f
 
 ## 4. 凭证安全
 
-TwoOnly 当前从 `NEXT_PUBLIC_TURN_*` 读取 TURN 凭证，所以它们会进入浏览器 JavaScript。长期固定密码适合小规模原型，但公开站点存在被他人盗用中继流量的风险。
+TwoOnly 优先从 `/api/turn-credentials` 获取 Cloudflare 短时凭证；仅当接口不可用时才回退到 `NEXT_PUBLIC_TURN_*`。后者会进入浏览器 JavaScript，长期固定密码只适合小规模原型。
 
 当前可执行的最低保护：
 
@@ -142,11 +142,22 @@ TwoOnly 当前从 `NEXT_PUBLIC_TURN_*` 读取 TURN 凭证，所以它们会进�
 - 监控异常地域、并发 allocation 和出口流量；
 - 不复用服务器登录密码或其他系统凭证。
 
-更正式的方案是 Coturn `use-auth-secret`/TURN REST API：可信后端用共享秘密签发带过期时间的临时用户名和 HMAC credential，浏览器只拿短时凭证。该方式需要为 TwoOnly 增加一个服务端凭证接口，当前纯静态版本尚未实现。
+自建 Coturn 的正式方案是 `use-auth-secret`/TURN REST API：可信后端用共享秘密签发带过期时间的临时用户名和 HMAC credential，浏览器只拿短时凭证。Cloudflare 托管方案的服务端接口已经实现；Coturn HMAC 签发可在同一接口边界继续扩展。
 
 托管 TURN 也遵循相同原则：例如 Cloudflare 要求后端保存 TURN key 和 API token，再为客户端生成有 TTL 的临时 `iceServers`。不要把服务商的长期 API token 写入任何 `NEXT_PUBLIC_*` 变量。
 
 ## 5. 写入 Vercel
+
+Cloudflare 托管方案在 Vercel Production 添加以下服务端变量，均不得带 `NEXT_PUBLIC_` 前缀：
+
+```dotenv
+CLOUDFLARE_TURN_KEY_ID=<Cloudflare TURN key ID>
+CLOUDFLARE_TURN_API_TOKEN=<Cloudflare TURN API token>
+```
+
+保存后必须重新部署。API Token 应标记为 Sensitive；不要提交到 Git 或上传到前端构建文件。
+
+自建 Coturn 静态兜底方案才使用以下变量：
 
 在 Vercel 项目 `twoonly-chat` 的 Settings → Environment Variables 中为 Production 添加：
 

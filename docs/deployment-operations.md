@@ -4,7 +4,7 @@
 
 | 服务 | 用途 | 是否保存聊天正文 |
 | --- | --- | --- |
-| Vercel | 构建和托管 Next.js 静态页面、CSS、JavaScript 与分享图 | 否 |
+| Vercel | 托管页面资源，并通过 Route Handler 向 Cloudflare 请求短时 TURN 凭证 | 否 |
 | Supabase Realtime | 通过 WebSocket 转发 WebRTC 的 `hello / offer / answer / candidate / rejected` 信令 | 否 |
 | STUN | 帮助发现可用于 ICE 的公网映射地址 | 否 |
 | TURN（可选） | 直连失败时中继已经加密的 WebRTC 流量 | 不做应用存储，但会经过中继 |
@@ -38,6 +38,8 @@ NEXT_PUBLIC_STUN_URLS=stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302
 NEXT_PUBLIC_TURN_URLS=
 NEXT_PUBLIC_TURN_USERNAME=
 NEXT_PUBLIC_TURN_CREDENTIAL=
+CLOUDFLARE_TURN_KEY_ID=
+CLOUDFLARE_TURN_API_TOKEN=
 
 NEXT_PUBLIC_SITE_URL=https://your-domain.example
 ```
@@ -50,9 +52,11 @@ NEXT_PUBLIC_SITE_URL=https://your-domain.example
 | `NEXT_PUBLIC_TURN_URLS` | 稳定生产建议 | 逗号分隔，可含 `turn:` 与 `turns:` 地址 |
 | `NEXT_PUBLIC_TURN_USERNAME` | 配置 TURN 时必需 | TURN 用户名 |
 | `NEXT_PUBLIC_TURN_CREDENTIAL` | 配置 TURN 时必需 | TURN 凭证；当前写法会进入浏览器包 |
+| `CLOUDFLARE_TURN_KEY_ID` | Cloudflare TURN 必需 | 服务端 TURN key ID，不加 `NEXT_PUBLIC_` |
+| `CLOUDFLARE_TURN_API_TOKEN` | Cloudflare TURN 必需 | 服务端长期 Token；必须作为 Vercel Sensitive Secret 保存 |
 | `NEXT_PUBLIC_SITE_URL` | 生产建议 | Open Graph/Twitter 分享图的绝对 URL 基址 |
 
-所有 `NEXT_PUBLIC_*` 在构建时进入前端 JavaScript。当前 TURN 参数适合原型和短期凭证，不适合长期静态密码。正式产品应增加一个可信后端，按用户/会话签发短时 TURN credential。
+所有 `NEXT_PUBLIC_*` 在构建时进入前端 JavaScript。三个 `NEXT_PUBLIC_TURN_*` 仅保留为自建 Coturn/联调兜底。生产推荐配置两项不带前缀的 `CLOUDFLARE_TURN_*`，由 `/api/turn-credentials` 在服务端生成 24 小时临时 credential；长期 Token 不会进入浏览器包。
 
 ## 4. Supabase 配置
 
@@ -131,7 +135,7 @@ npx vercel --prod
 - TCP 3478：UDP 被禁时兜底；
 - TLS 443（`turns:`）：适合只允许 HTTPS 类流量的严格网络。
 
-当前生产环境未设置三项 TURN 变量；因此重新部署本身不会自动产生中继能力。页面会在 ICE 直连进入 `failed` 时明确显示“直连失败（未配置 TURN）”，用于区分信令抖动和缺少中继。
+Cloudflare 方案使用服务端变量 `CLOUDFLARE_TURN_KEY_ID` 与 `CLOUDFLARE_TURN_API_TOKEN`。浏览器加载聊天会 POST `/api/turn-credentials`；接口失败时自动回退到静态 STUN/`NEXT_PUBLIC_TURN_*`，ICE 直连进入 `failed` 且没有可用 TURN 时会明确显示“直连失败（未配置 TURN）”。
 
 示例：
 

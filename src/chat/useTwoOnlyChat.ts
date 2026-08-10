@@ -8,6 +8,7 @@ import { createGuestInviteUrl, createHostRoom, createRoomUrl, readRoomInvitation
 import { createSignalTransport, hasRemoteSignaling, type SignalTransport } from "@/src/signal/signalTransport";
 import { clearEncryptedHistory, getOrCreateSenderId, loadEncryptedHistory, persistEncryptedMessage, saveSenderId } from "@/src/storage/chatStorage";
 import { WebRtcSession } from "@/src/webrtc/WebRtcSession";
+import { resolveIceConfiguration } from "@/src/webrtc/iceConfig";
 
 export function useTwoOnlyChat() {
   const [role, setRole] = useState<Role | null>(null);
@@ -112,27 +113,34 @@ export function useTwoOnlyChat() {
       }
     };
 
-    const session = new WebRtcSession({
-      role,
-      senderId: senderIdRef.current || `${role}-${randomToken(8)}`,
-      sendSignal: (message) => transport?.send(message),
-      onWire: (wire) => void acceptWire(wire),
-      onConnectionChange: updateConnection,
-      onNotice: setNotice,
-    });
-    sessionRef.current = session;
+    let session: WebRtcSession | null = null;
+    void resolveIceConfiguration().then(({ configuration, turnConfigured }) => {
+      if (!active) return;
+      const createdSession = new WebRtcSession({
+        role,
+        senderId: senderIdRef.current || `${role}-${randomToken(8)}`,
+        iceConfiguration: configuration,
+        turnConfigured,
+        sendSignal: (message) => transport?.send(message),
+        onWire: (wire) => void acceptWire(wire),
+        onConnectionChange: updateConnection,
+        onNotice: setNotice,
+      });
+      session = createdSession;
+      sessionRef.current = createdSession;
 
-    transport = createSignalTransport({
-      roomId,
-      onMessage: session.handleSignal,
-      onStatus: (status) => {
-        if (status === "subscribed") session.onSignalReady();
-        else session.onSignalUnavailable();
-      },
+      transport = createSignalTransport({
+        roomId,
+        onMessage: createdSession.handleSignal,
+        onStatus: (status) => {
+          if (status === "subscribed") createdSession.onSignalReady();
+          else createdSession.onSignalUnavailable();
+        },
+      });
+      transportRef.current = transport;
+      createdSession.start();
+      transport.start();
     });
-    transportRef.current = transport;
-    session.start();
-    transport.start();
 
     void Promise.all(
       loadEncryptedHistory(roomId).map((wire) => messageCrypto.decrypt(wire).catch(() => null)),
@@ -148,7 +156,7 @@ export function useTwoOnlyChat() {
     return () => {
       active = false;
       transport?.dispose();
-      session.dispose();
+      session?.dispose();
       if (transportRef.current === transport) transportRef.current = null;
       if (sessionRef.current === session) sessionRef.current = null;
       if (messageCryptoRef.current === messageCrypto) messageCryptoRef.current = null;
