@@ -1,15 +1,22 @@
-import type { ConnectionState, EncryptedWire, Role } from "@/src/chat/types";
+import type { ConnectionState, EncryptedWire } from "@/src/chat/types";
 import { randomToken } from "@/src/crypto/messageCrypto";
 import {
   diagnosticErrorDetails,
   type ConnectionDiagnosticSink,
 } from "@/src/diagnostics/connectionDiagnostics";
 import { encodeEncryptedWire, EncryptedWireAssembler } from "@/src/protocol/wireProtocol";
-import type { OutgoingSignal, SignalMessage } from "@/src/signal/types";
+import {
+  SIGNAL_PROTOCOL_VERSION,
+  type AnswerSignal,
+  type CandidateSignal,
+  type HelloSignal,
+  type OfferSignal,
+  type OutgoingSignal,
+  type SignalMessage,
+} from "@/src/signal/types";
 
 type SessionOptions = {
-  role: Role;
-  senderId: string;
+  participantId: string;
   iceConfiguration: RTCConfiguration;
   turnConfigured: boolean;
   sendSignal: (message: SignalMessage) => void;
@@ -19,10 +26,27 @@ type SessionOptions = {
   onDiagnostic: ConnectionDiagnosticSink;
 };
 
+type ActiveNegotiation = {
+  id: string;
+  localEpoch: number;
+  remoteEpoch: number;
+};
+
+type PendingIceBucket = {
+  from: string;
+  fromEpoch: number;
+  toEpoch: number;
+  negotiationId: string;
+  candidates: RTCIceCandidateInit[];
+};
+
 const RECONNECT_DELAY_MS = 800;
 const DISCONNECTED_GRACE_MS = 2_500;
 const ANNOUNCE_INTERVAL_MS = 1_500;
 const SIGNAL_WARNING_DELAY_MS = 3_500;
+const PEER_LOCK_TIMEOUT_MS = 10_000;
+const MAX_PENDING_NEGOTIATIONS = 2;
+const MAX_PENDING_CANDIDATES = 32;
 
 type ConnectionStatsReport = {
   id: string;
@@ -50,6 +74,10 @@ type CandidateShape = RTCIceCandidateInit & {
 
 function negotiationTag(value: string | undefined) {
   return value ? value.slice(-6) : undefined;
+}
+
+export function electOfferer(localParticipantId: string, remoteParticipantId: string) {
+  return localParticipantId < remoteParticipantId;
 }
 
 function describeCandidate(value: RTCIceCandidate | RTCIceCandidateInit) {
@@ -109,9 +137,15 @@ function getConnectionSummary(stats: RTCStatsReport) {
   };
 }
 
+function pendingIceKey(signal: CandidateSignal | OfferSignal | ActiveNegotiation, peerId = "") {
+  if ("type" in signal) {
+    return `${signal.from}:${signal.fromEpoch}:${signal.toEpoch}:${signal.negotiationId}`;
+  }
+  return `${peerId}:${signal.remoteEpoch}:${signal.localEpoch}:${signal.id}`;
+}
+
 export class WebRtcSession {
-  private readonly role: Role;
-  private readonly senderId: string;
+  private readonly participantId: string;
   private readonly iceConfiguration: RTCConfiguration;
   private readonly turnConfigured: boolean;
   private readonly sendSignalMessage: SessionOptions["sendSignal"];
@@ -124,12 +158,20 @@ export class WebRtcSession {
   private peer: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
   private peerId = "";
-  private pendingIce: RTCIceCandidateInit[] = [];
-  private activeNegotiationId = "";
+  private peerEpoch = 0;
+  private peerLastSeenAt = 0;
+  private localEpoch = 1;
+  private activeNegotiation: ActiveNegotiation | null = null;
+  private pendingIce = new Map<string, PendingIceBucket>();
   private handledOfferId = "";
   private announceEnabled = false;
   private restartRequested = false;
   private offerCreating = false;
+  private offerStartedFor = "";
+  private lastOfferSentAt = 0;
+  private lastElectionKey = "";
+  private helloReplyKeys = new Set<string>();
+  private rejectedUntil = 0;
   private reconnectTimer: number | undefined;
   private announceTimer: number | undefined;
   private signalWarningTimer: number | undefined;
@@ -141,8 +183,7 @@ export class WebRtcSession {
   private gatheredCandidates = { host: 0, srflx: 0, prflx: 0, relay: 0, unknown: 0 };
 
   constructor(options: SessionOptions) {
-    this.role = options.role;
-    this.senderId = options.senderId;
+    this.participantId = options.participantId;
     this.iceConfiguration = options.iceConfiguration;
     this.turnConfigured = options.turnConfigured;
     this.sendSignalMessage = options.sendSignal;
@@ -150,33 +191,31 @@ export class WebRtcSession {
     this.onConnectionChange = options.onConnectionChange;
     this.onNotice = options.onNotice;
     this.onDiagnostic = options.onDiagnostic;
-    const iceServerCount = options.iceConfiguration.iceServers?.length ?? 0;
     this.onDiagnostic({
       stage: "client",
       code: "client.session.created",
       level: "success",
-      message: "WebRTC 会话对象已创建",
+      message: "无角色 WebRTC 会话对象已创建",
       details: {
-        role: this.role,
+        protocol: SIGNAL_PROTOCOL_VERSION,
         turnConfigured: this.turnConfigured,
         policy: options.iceConfiguration.iceTransportPolicy ?? "all",
-        iceServerCount,
+        iceServerCount: options.iceConfiguration.iceServers?.length ?? 0,
       },
     });
   }
 
   start() {
-    this.activeNegotiationId = "";
+    this.activeNegotiation = null;
     this.handledOfferId = "";
     this.announceEnabled = false;
     this.signalQueue = Promise.resolve();
     this.onDiagnostic({
       stage: "client",
       code: "client.session.start",
-      message: "启动 WebRTC 会话状态机",
-      details: { role: this.role },
+      message: "启动对等 WebRTC 会话状态机",
+      details: { localEpoch: this.localEpoch },
     });
-    if (this.role === "guest") this.createPeer();
   }
 
   onSignalReady() {
@@ -193,22 +232,17 @@ export class WebRtcSession {
       this.signalWarningVisible = false;
       this.onNotice("信令服务已恢复，正在重新握手。");
     }
-    if (this.role !== "guest") return;
-    this.announceEnabled = true;
+    if (this.dataChannel?.readyState === "open") return;
     this.onDiagnostic({
       stage: "hello",
       code: "hello.announce.start",
-      message: "访客开始发送 Hello 探测房主",
+      message: "开始广播 Hello 发现另一位参与者",
+      details: { localEpoch: this.localEpoch },
     });
-    this.announce();
-    if (this.announceTimer === undefined) {
-      this.announceTimer = window.setInterval(() => this.announce(), ANNOUNCE_INTERVAL_MS);
-    }
+    this.enableAnnouncing();
   }
 
   onSignalUnavailable() {
-    // Signaling is only needed to negotiate/re-negotiate. A healthy DataChannel keeps working
-    // during a temporary Realtime outage and must not be presented as disconnected.
     if (this.disposed || this.dataChannel?.readyState === "open" || this.signalWarningTimer !== undefined) return;
     this.onDiagnostic({
       stage: "signal",
@@ -244,7 +278,11 @@ export class WebRtcSession {
       stage,
       code: `${code}.queued`,
       message: `${signal.type} 信令进入 WebRTC 处理队列`,
-      details: { negotiation: negotiationTag(signal.negotiationId) },
+      details: {
+        localEpoch: this.localEpoch,
+        remoteEpoch: signal.fromEpoch,
+        negotiation: "negotiationId" in signal ? negotiationTag(signal.negotiationId) : undefined,
+      },
       dedupeKey: signal.type === "candidate" ? "candidate-queued" : undefined,
     });
     this.signalQueue = this.signalQueue
@@ -253,6 +291,7 @@ export class WebRtcSession {
   };
 
   reconnect(automatic = false, delayMs = RECONNECT_DELAY_MS) {
+    if (automatic && this.reconnectTimer !== undefined) return;
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
     if (this.signalWarningTimer !== undefined) window.clearTimeout(this.signalWarningTimer);
     this.signalWarningTimer = undefined;
@@ -281,32 +320,26 @@ export class WebRtcSession {
       }
 
       this.reconnectAttempt += 1;
+      this.localEpoch += 1;
+      this.activeNegotiation = null;
+      this.handledOfferId = "";
+      this.offerCreating = false;
+      this.offerStartedFor = "";
+      this.lastOfferSentAt = 0;
+      this.lastElectionKey = "";
+      this.helloReplyKeys.clear();
+      this.rejectedUntil = 0;
+      this.closePeer();
       this.onDiagnostic({
         stage: "client",
         code: "client.reconnect.begin",
-        message: "开始新一轮重新握手",
-        details: { attempt: this.reconnectAttempt, role: this.role },
+        message: "开始新一轮对等握手",
+        details: { attempt: this.reconnectAttempt, localEpoch: this.localEpoch },
       });
-      this.activeNegotiationId = "";
-      this.handledOfferId = "";
-      this.pendingIce = [];
       this.onConnectionChange("connecting", "正在重新建立加密连接");
       this.onNotice("正在重新握手，请保持双方页面打开。");
-
-      if (this.role === "guest") {
-        this.createPeer();
-        this.announceEnabled = true;
-        this.restartRequested = true;
-        this.sendSignal({ type: "hello", restart: true });
-        return;
-      }
-
-      if (this.peerId) {
-        void this.startHostOffer(this.peerId).catch((error: unknown) => this.handleNegotiationFailure(error));
-      } else {
-        this.onConnectionChange("waiting", "等待另一位成员");
-        this.onNotice("等待对方重新上线；邀请链接仍然有效。");
-      }
+      this.restartRequested = true;
+      this.enableAnnouncing();
     };
 
     if (automatic) this.reconnectTimer = window.setTimeout(reconnectNow, delayMs);
@@ -346,43 +379,58 @@ export class WebRtcSession {
       stage: "client",
       code: "client.session.dispose",
       message: "关闭 WebRTC 会话",
-      details: { peerGeneration: this.peerGeneration },
+      details: { peerGeneration: this.peerGeneration, localEpoch: this.localEpoch },
     });
     this.announceEnabled = false;
     if (this.announceTimer !== undefined) window.clearInterval(this.announceTimer);
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
+    if (this.signalWarningTimer !== undefined) window.clearTimeout(this.signalWarningTimer);
     this.announceTimer = undefined;
     this.reconnectTimer = undefined;
     this.signalWarningTimer = undefined;
     this.signalWarningVisible = false;
     this.restartRequested = false;
+    this.pendingIce.clear();
     this.wireAssembler.clear();
+    this.closePeer();
+  }
+
+  private announce() {
+    if (
+      !this.announceEnabled
+      || this.dataChannel?.readyState === "open"
+      || this.disposed
+      || Date.now() < this.rejectedUntil
+    ) return;
+    this.sendSignal({ type: "hello", restart: this.restartRequested });
+  }
+
+  private enableAnnouncing(immediate = true) {
+    this.announceEnabled = true;
+    if (immediate) this.announce();
+    if (this.announceTimer === undefined) {
+      this.announceTimer = window.setInterval(() => this.announce(), ANNOUNCE_INTERVAL_MS);
+    }
+  }
+
+  private sendSignal(message: OutgoingSignal) {
+    this.sendSignalMessage({
+      ...message,
+      protocol: SIGNAL_PROTOCOL_VERSION,
+      from: this.participantId,
+      fromEpoch: this.localEpoch,
+    } as SignalMessage);
+  }
+
+  private closePeer() {
     const peer = this.peer;
     this.peer = null;
     this.dataChannel = null;
     peer?.close();
   }
 
-  private announce() {
-    if (
-      !this.announceEnabled
-      || this.role !== "guest"
-      || this.dataChannel?.readyState === "open"
-      || this.disposed
-    ) return;
-    this.sendSignal({ type: "hello", restart: this.restartRequested });
-  }
-
-  private sendSignal(message: OutgoingSignal) {
-    this.sendSignalMessage({ ...message, from: this.senderId });
-  }
-
-  private createPeer() {
-    const previousPeer = this.peer;
-    this.peer = null;
-    this.dataChannel = null;
-    previousPeer?.close();
-    this.pendingIce = [];
+  private createPeer(createsDataChannel: boolean, negotiation: ActiveNegotiation) {
+    this.closePeer();
     this.peerGeneration += 1;
     this.gatheredCandidates = { host: 0, srflx: 0, prflx: 0, relay: 0, unknown: 0 };
 
@@ -393,10 +441,17 @@ export class WebRtcSession {
       stage: "ice",
       code: "ice.peer.created",
       message: "创建新的 RTCPeerConnection",
-      details: { generation, role: this.role, turnConfigured: this.turnConfigured },
+      details: {
+        generation,
+        createsDataChannel,
+        turnConfigured: this.turnConfigured,
+        localEpoch: negotiation.localEpoch,
+        remoteEpoch: negotiation.remoteEpoch,
+      },
     });
+
     peer.onicecandidate = (event) => {
-      if (this.peer !== peer) return;
+      if (this.peer !== peer || this.activeNegotiation !== negotiation) return;
       if (!event.candidate) {
         this.onDiagnostic({
           stage: "ice",
@@ -422,7 +477,8 @@ export class WebRtcSession {
       this.sendSignal({
         type: "candidate",
         to: this.peerId,
-        negotiationId: this.activeNegotiationId,
+        toEpoch: negotiation.remoteEpoch,
+        negotiationId: negotiation.id,
         payload: event.candidate.toJSON(),
       });
     };
@@ -504,7 +560,7 @@ export class WebRtcSession {
       }
     };
 
-    if (this.role === "host") {
+    if (createsDataChannel) {
       this.attachDataChannel(peer.createDataChannel("twoonly-messages", { ordered: true }));
     } else {
       peer.ondatachannel = (event) => this.attachDataChannel(event.channel);
@@ -590,12 +646,18 @@ export class WebRtcSession {
     this.signalWarningVisible = false;
     this.restartRequested = false;
     this.announceEnabled = false;
+    this.rejectedUntil = 0;
     this.onDiagnostic({
       stage: "data",
       code: "data.connection.ready",
       level: "success",
       message: "WebRTC 与 DataChannel 均已就绪",
-      details: { reconnectAttempt: this.reconnectAttempt, peerGeneration: this.peerGeneration },
+      details: {
+        reconnectAttempt: this.reconnectAttempt,
+        peerGeneration: this.peerGeneration,
+        localEpoch: this.localEpoch,
+        remoteEpoch: this.peerEpoch,
+      },
     });
     this.onConnectionChange("connected", "WebRTC 已连接");
     this.onNotice("");
@@ -641,304 +703,573 @@ export class WebRtcSession {
     }
   }
 
-  private async startHostOffer(targetId = this.peerId) {
+  private peerLockState(remoteId: string, remoteEpoch: number) {
+    if (!this.peerId) {
+      this.peerId = remoteId;
+      this.peerEpoch = remoteEpoch;
+      this.peerLastSeenAt = Date.now();
+      this.onDiagnostic({
+        stage: "hello",
+        code: "peer.locked",
+        level: "success",
+        message: "已锁定另一位参与者",
+        details: { remoteEpoch },
+      });
+      return "accepted" as const;
+    }
+
+    if (this.peerId !== remoteId) {
+      const lockExpired = this.peerLastSeenAt > 0
+        && Date.now() - this.peerLastSeenAt >= PEER_LOCK_TIMEOUT_MS;
+      const replaceable = this.peer?.connectionState === "failed"
+        || this.peer?.connectionState === "closed"
+        || lockExpired;
+      if (!replaceable || this.dataChannel?.readyState === "open") return "busy" as const;
+      this.peerId = remoteId;
+      this.peerEpoch = remoteEpoch;
+      this.peerLastSeenAt = Date.now();
+      this.activeNegotiation = null;
+      this.handledOfferId = "";
+      this.offerStartedFor = "";
+      this.lastOfferSentAt = 0;
+      this.lastElectionKey = "";
+      this.closePeer();
+      this.onDiagnostic({
+        stage: "hello",
+        code: "peer.replaced",
+        level: "warn",
+        message: "旧连接已失效，接受新的页面实例",
+        details: { remoteEpoch },
+      });
+      return "accepted" as const;
+    }
+
+    if (remoteEpoch < this.peerEpoch) return "stale" as const;
+    this.peerLastSeenAt = Date.now();
+    if (remoteEpoch > this.peerEpoch) {
+      this.peerEpoch = remoteEpoch;
+      this.activeNegotiation = null;
+      this.handledOfferId = "";
+      this.offerStartedFor = "";
+      this.lastOfferSentAt = 0;
+      this.lastElectionKey = "";
+      this.closePeer();
+      this.onConnectionChange("connecting", "对方正在重新连接");
+      this.onDiagnostic({
+        stage: "hello",
+        code: "peer.epoch.updated",
+        level: "warn",
+        message: "检测到对方的新重连轮次",
+        details: { remoteEpoch },
+      });
+    }
+    return "accepted" as const;
+  }
+
+  private reportElection() {
+    if (!this.peerId) return;
+    const key = `${this.localEpoch}:${this.peerEpoch}:${this.peerId}`;
+    if (key === this.lastElectionKey) return;
+    this.lastElectionKey = key;
+    this.onDiagnostic({
+      stage: "hello",
+      code: "peer.elected",
+      level: "success",
+      message: electOfferer(this.participantId, this.peerId)
+        ? "本端被选为本轮 Offer 发起方"
+        : "对端被选为本轮 Offer 发起方",
+      details: {
+        localIsOfferer: electOfferer(this.participantId, this.peerId),
+        localEpoch: this.localEpoch,
+        remoteEpoch: this.peerEpoch,
+      },
+    });
+  }
+
+  private replyHello(signal: HelloSignal) {
+    const key = `${signal.from}:${signal.fromEpoch}:${this.localEpoch}`;
+    if (this.helloReplyKeys.has(key)) return;
+    this.helloReplyKeys.add(key);
+    this.sendSignal({
+      type: "hello",
+      to: signal.from,
+      toEpoch: signal.fromEpoch,
+      restart: this.restartRequested,
+    });
+  }
+
+  private async maybeStartOffer() {
+    if (!this.peerId || !electOfferer(this.participantId, this.peerId) || this.disposed) return;
+    const offerKey = `${this.localEpoch}:${this.peerEpoch}:${this.peerId}`;
+    if (this.offerStartedFor === offerKey || this.offerCreating) {
+      const offer = this.peer?.localDescription;
+      const active = this.activeNegotiation;
+      if (
+        active
+        && offer?.type === "offer"
+        && this.peer?.signalingState === "have-local-offer"
+        && Date.now() - this.lastOfferSentAt >= 1_000
+      ) {
+        this.onDiagnostic({
+          stage: "sdp",
+          code: "sdp.offer.resent",
+          message: "重复 Hello 命中当前协商，重新发送现有 Offer",
+          details: { negotiation: negotiationTag(active.id) },
+        });
+        this.sendSignal({
+          type: "offer",
+          to: this.peerId,
+          toEpoch: active.remoteEpoch,
+          negotiationId: active.id,
+          payload: { type: offer.type, sdp: offer.sdp },
+        });
+        this.lastOfferSentAt = Date.now();
+      }
+      return;
+    }
+    this.offerStartedFor = offerKey;
+    await this.startOffer(this.peerId, this.peerEpoch);
+  }
+
+  private async startOffer(targetId: string, targetEpoch: number) {
     if (!targetId || this.offerCreating || this.disposed) return;
-    if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = undefined;
     this.offerCreating = true;
-    this.peerId = targetId;
-    this.onConnectionChange("connecting", "正在重新建立加密连接");
+    this.onConnectionChange("connecting", "正在建立加密连接");
     this.onDiagnostic({
       stage: "sdp",
       code: "sdp.offer.start",
-      message: "房主开始创建 Offer",
-      details: { peerGeneration: this.peerGeneration + 1 },
+      message: "选举出的本端开始创建 Offer",
+      details: {
+        peerGeneration: this.peerGeneration + 1,
+        localEpoch: this.localEpoch,
+        remoteEpoch: targetEpoch,
+      },
     });
 
     try {
-      const negotiationId = randomToken(8);
-      this.activeNegotiationId = negotiationId;
+      const negotiation: ActiveNegotiation = {
+        id: randomToken(8),
+        localEpoch: this.localEpoch,
+        remoteEpoch: targetEpoch,
+      };
+      this.activeNegotiation = negotiation;
       this.handledOfferId = "";
-      const peer = this.createPeer();
+      const peer = this.createPeer(true, negotiation);
       const offer = await peer.createOffer({ iceRestart: true });
+      if (this.peer !== peer || this.activeNegotiation !== negotiation) return;
       this.onDiagnostic({
         stage: "sdp",
         code: "sdp.offer.created",
-        message: "房主已创建 Offer",
-        details: { negotiation: negotiationTag(negotiationId), sdpBytes: offer.sdp?.length ?? 0 },
+        message: "本端已创建 Offer",
+        details: { negotiation: negotiationTag(negotiation.id), sdpBytes: offer.sdp?.length ?? 0 },
       });
       await peer.setLocalDescription(offer);
+      if (this.peer !== peer || this.activeNegotiation !== negotiation) return;
       this.onDiagnostic({
         stage: "sdp",
         code: "sdp.offer.local_applied",
         level: "success",
         message: "Offer 已设置为本地描述",
-        details: { negotiation: negotiationTag(negotiationId) },
+        details: { negotiation: negotiationTag(negotiation.id) },
       });
-      this.sendSignal({ type: "offer", to: targetId, negotiationId, payload: offer });
+      const localOffer = peer.localDescription;
+      if (localOffer?.type !== "offer") throw new Error("local offer unavailable");
+      this.sendSignal({
+        type: "offer",
+        to: targetId,
+        toEpoch: targetEpoch,
+        negotiationId: negotiation.id,
+        payload: { type: localOffer.type, sdp: localOffer.sdp },
+      });
+      this.lastOfferSentAt = Date.now();
     } finally {
       this.offerCreating = false;
     }
   }
 
-  private async flushPendingIce() {
+  private storePendingIce(signal: CandidateSignal) {
+    const key = pendingIceKey(signal);
+    let bucket = this.pendingIce.get(key);
+    if (!bucket) {
+      while (this.pendingIce.size >= MAX_PENDING_NEGOTIATIONS) {
+        const oldestKey = this.pendingIce.keys().next().value as string | undefined;
+        if (!oldestKey) break;
+        this.pendingIce.delete(oldestKey);
+      }
+      bucket = {
+        from: signal.from,
+        fromEpoch: signal.fromEpoch,
+        toEpoch: signal.toEpoch,
+        negotiationId: signal.negotiationId,
+        candidates: [],
+      };
+      this.pendingIce.set(key, bucket);
+    }
+    if (bucket.candidates.length < MAX_PENDING_CANDIDATES) bucket.candidates.push(signal.payload);
+    this.onDiagnostic({
+      stage: "ice",
+      code: "ice.candidate.pending",
+      message: "远端描述尚未就绪，按协商轮次暂存 ICE Candidate",
+      details: {
+        ...describeCandidate(signal.payload),
+        pendingCount: bucket.candidates.length,
+        negotiation: negotiationTag(signal.negotiationId),
+      },
+      dedupeKey: `candidate-pending-${signal.negotiationId}-${describeCandidate(signal.payload).candidateType}`,
+    });
+  }
+
+  private async flushPendingIce(negotiation: ActiveNegotiation, peer: RTCPeerConnection) {
+    if (!peer.remoteDescription) return;
+    const key = pendingIceKey(negotiation, this.peerId);
+    const bucket = this.pendingIce.get(key);
+    if (!bucket) return;
+    this.pendingIce.delete(key);
+    this.onDiagnostic({
+      stage: "ice",
+      code: "ice.pending.flush",
+      message: "开始添加当前协商轮次等待中的远端 Candidate",
+      details: { count: bucket.candidates.length, negotiation: negotiationTag(negotiation.id) },
+    });
+    for (const candidate of bucket.candidates) {
+      try {
+        await peer.addIceCandidate(candidate);
+      } catch (error: unknown) {
+        this.onDiagnostic({
+          stage: "ice",
+          code: "ice.candidate.rejected",
+          level: "warn",
+          message: "浏览器拒绝了一条暂存 Candidate，继续处理同轮其他候选",
+          details: diagnosticErrorDetails(error),
+          dedupeKey: "pending-candidate-rejected",
+        });
+      }
+    }
+  }
+
+  private async handleHello(signal: HelloSignal) {
+    const lockState = this.peerLockState(signal.from, signal.fromEpoch);
+    this.onDiagnostic({
+      stage: "hello",
+      code: lockState === "accepted" ? "hello.received" : `hello.${lockState}`,
+      level: lockState === "accepted" ? "success" : "warn",
+      message: lockState === "accepted"
+        ? "收到另一位参与者的 Hello"
+        : lockState === "busy"
+          ? "当前会话已有另一位参与者"
+          : "忽略旧页面实例的 Hello",
+      details: { restart: signal.restart, remoteEpoch: signal.fromEpoch },
+      dedupeKey: `hello-${lockState}-${signal.fromEpoch}`,
+    });
+    if (lockState === "busy") {
+      this.sendSignal({
+        type: "rejected",
+        to: signal.from,
+        toEpoch: signal.fromEpoch,
+        reason: "room-full",
+      });
+      return;
+    }
+    if (lockState !== "accepted") return;
+    this.rejectedUntil = 0;
+    if (this.dataChannel?.readyState !== "open") this.enableAnnouncing(false);
+    this.replyHello(signal);
+    this.reportElection();
+    await this.maybeStartOffer();
+  }
+
+  private async handleOffer(signal: OfferSignal) {
+    if (signal.payload.type !== "offer") {
+      this.onDiagnostic({
+        stage: "sdp",
+        code: "sdp.offer.invalid",
+        level: "warn",
+        message: "忽略类型无效的 Offer",
+      });
+      return;
+    }
+    const lockState = this.peerLockState(signal.from, signal.fromEpoch);
+    if (lockState === "busy") {
+      this.sendSignal({
+        type: "rejected",
+        to: signal.from,
+        toEpoch: signal.fromEpoch,
+        reason: "room-full",
+      });
+      return;
+    }
+    if (lockState !== "accepted") return;
+    if (!electOfferer(signal.from, this.participantId)) {
+      this.onDiagnostic({
+        stage: "sdp",
+        code: "sdp.offer.unexpected_offerer",
+        level: "warn",
+        message: "忽略未按确定性选举产生的 Offer",
+        details: { remoteEpoch: signal.fromEpoch },
+      });
+      return;
+    }
+
+    this.reportElection();
+    this.onConnectionChange("connecting", "正在建立加密连接");
+    if (this.handledOfferId === signal.negotiationId) {
+      const answer = this.peer?.localDescription;
+      if (answer?.type === "answer") {
+        this.onDiagnostic({
+          stage: "sdp",
+          code: "sdp.answer.resent",
+          message: "重复 Offer 命中当前协商，重新发送现有 Answer",
+          details: { negotiation: negotiationTag(signal.negotiationId) },
+        });
+        this.sendSignal({
+          type: "answer",
+          to: signal.from,
+          toEpoch: signal.fromEpoch,
+          negotiationId: signal.negotiationId,
+          payload: { type: answer.type, sdp: answer.sdp },
+        });
+      }
+      return;
+    }
+
+    const negotiation: ActiveNegotiation = {
+      id: signal.negotiationId,
+      localEpoch: this.localEpoch,
+      remoteEpoch: signal.fromEpoch,
+    };
+    this.activeNegotiation = negotiation;
+    this.handledOfferId = signal.negotiationId;
+    this.offerStartedFor = "";
+    const peer = this.createPeer(false, negotiation);
+    this.onDiagnostic({
+      stage: "sdp",
+      code: "sdp.offer.accepted",
+      level: "success",
+      message: "本端开始处理对方 Offer",
+      details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: signal.payload.sdp?.length ?? 0 },
+    });
+    await peer.setRemoteDescription(signal.payload);
+    if (this.peer !== peer || this.activeNegotiation !== negotiation) return;
+    this.onDiagnostic({
+      stage: "sdp",
+      code: "sdp.offer.remote_applied",
+      level: "success",
+      message: "Offer 已设置为远端描述",
+      details: { negotiation: negotiationTag(signal.negotiationId) },
+    });
+    await this.flushPendingIce(negotiation, peer);
+    const answer = await peer.createAnswer();
+    if (this.peer !== peer || this.activeNegotiation !== negotiation) return;
+    this.onDiagnostic({
+      stage: "sdp",
+      code: "sdp.answer.created",
+      message: "本端已创建 Answer",
+      details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: answer.sdp?.length ?? 0 },
+    });
+    await peer.setLocalDescription(answer);
+    if (this.peer !== peer || this.activeNegotiation !== negotiation) return;
+    this.onDiagnostic({
+      stage: "sdp",
+      code: "sdp.answer.local_applied",
+      level: "success",
+      message: "Answer 已设置为本地描述",
+      details: { negotiation: negotiationTag(signal.negotiationId) },
+    });
+    const localAnswer = peer.localDescription;
+    if (localAnswer?.type !== "answer") throw new Error("local answer unavailable");
+    this.sendSignal({
+      type: "answer",
+      to: signal.from,
+      toEpoch: signal.fromEpoch,
+      negotiationId: signal.negotiationId,
+      payload: { type: localAnswer.type, sdp: localAnswer.sdp },
+    });
+  }
+
+  private async handleAnswer(signal: AnswerSignal) {
+    const active = this.activeNegotiation;
+    if (
+      signal.payload.type !== "answer"
+      || !active
+      || signal.from !== this.peerId
+      || signal.fromEpoch !== active.remoteEpoch
+      || signal.negotiationId !== active.id
+      || !electOfferer(this.participantId, signal.from)
+    ) {
+      this.onDiagnostic({
+        stage: "sdp",
+        code: "sdp.answer.stale",
+        level: "warn",
+        message: "忽略不属于当前选举轮次的 Answer",
+        details: {
+          negotiation: negotiationTag(signal.negotiationId),
+          active: negotiationTag(active?.id),
+          remoteEpoch: signal.fromEpoch,
+        },
+      });
+      return;
+    }
     const peer = this.peer;
-    if (!peer?.remoteDescription) return;
-    const pending = this.pendingIce.splice(0);
-    if (pending.length) {
+    if (!peer || peer.signalingState !== "have-local-offer") {
+      this.onDiagnostic({
+        stage: "sdp",
+        code: "sdp.answer.unexpected_state",
+        level: "warn",
+        message: "当前 SDP 状态无法应用 Answer",
+        details: { signalingState: peer?.signalingState ?? "missing" },
+      });
+      return;
+    }
+    await peer.setRemoteDescription(signal.payload);
+    if (this.peer !== peer || this.activeNegotiation !== active) return;
+    this.onDiagnostic({
+      stage: "sdp",
+      code: "sdp.answer.applied",
+      level: "success",
+      message: "本端已应用对方 Answer",
+      details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: signal.payload.sdp?.length ?? 0 },
+    });
+    await this.flushPendingIce(active, peer);
+  }
+
+  private async handleCandidate(signal: CandidateSignal) {
+    if (this.peerId && signal.from !== this.peerId) {
       this.onDiagnostic({
         stage: "ice",
-        code: "ice.pending.flush",
-        message: "开始补加等待中的远端 Candidate",
-        details: { count: pending.length },
+        code: "ice.candidate.wrong_peer",
+        level: "warn",
+        message: "忽略其他参与者的 ICE Candidate",
+        dedupeKey: "candidate-wrong-peer",
       });
+      return;
     }
-    for (const candidate of pending) await peer.addIceCandidate(candidate);
+    if (this.peerId === signal.from && signal.fromEpoch < this.peerEpoch) {
+      this.onDiagnostic({
+        stage: "ice",
+        code: "ice.candidate.stale",
+        level: "warn",
+        message: "忽略旧重连轮次的 ICE Candidate",
+        details: { remoteEpoch: signal.fromEpoch, activeRemoteEpoch: this.peerEpoch },
+        dedupeKey: "stale-candidate",
+      });
+      return;
+    }
+
+    const active = this.activeNegotiation;
+    const matchesActive = active
+      && signal.from === this.peerId
+      && signal.fromEpoch === active.remoteEpoch
+      && signal.toEpoch === active.localEpoch
+      && signal.negotiationId === active.id;
+    if (matchesActive && this.peer?.remoteDescription) {
+      try {
+        await this.peer.addIceCandidate(signal.payload);
+        const summary = describeCandidate(signal.payload);
+        this.onDiagnostic({
+          stage: "ice",
+          code: "ice.candidate.added",
+          message: "已添加当前协商轮次的远端 ICE Candidate",
+          details: summary,
+          dedupeKey: `candidate-added-${summary.candidateType}-${summary.protocol}`,
+        });
+      } catch (error: unknown) {
+        this.onDiagnostic({
+          stage: "ice",
+          code: "ice.candidate.rejected",
+          level: "warn",
+          message: "浏览器拒绝了一条远端 ICE Candidate，继续处理其他候选",
+          details: diagnosticErrorDetails(error),
+          dedupeKey: "candidate-add-rejected",
+        });
+      }
+      return;
+    }
+    this.storePendingIce(signal);
   }
 
   private async processSignal(signal: SignalMessage) {
-    if (this.disposed || signal.from === this.senderId) return;
-    if (signal.to && signal.to !== this.senderId) {
+    if (this.disposed) return;
+    if (signal.from === this.participantId) {
+      this.onDiagnostic({
+        stage: "signal",
+        code: "signal.message.self_ignored",
+        message: "忽略本页面回显的信令",
+        details: { type: signal.type },
+        dedupeKey: `self-${signal.type}`,
+      });
+      return;
+    }
+    if ("to" in signal && signal.to && signal.to !== this.participantId) {
       this.onDiagnostic({
         stage: "signal",
         code: "signal.message.wrong_target",
-        message: "忽略发给其他成员的信令",
+        message: "忽略发给其他参与者的信令",
         details: { type: signal.type },
         dedupeKey: `wrong-target-${signal.type}`,
       });
       return;
     }
+    if ("toEpoch" in signal && signal.toEpoch !== undefined && signal.toEpoch !== this.localEpoch) {
+      this.onDiagnostic({
+        stage: "signal",
+        code: "signal.message.stale_epoch",
+        level: "warn",
+        message: "忽略发给旧页面轮次的信令",
+        details: { type: signal.type, targetEpoch: signal.toEpoch, localEpoch: this.localEpoch },
+        dedupeKey: `stale-epoch-${signal.type}`,
+      });
+      return;
+    }
+    if (signal.from === this.peerId && signal.fromEpoch >= this.peerEpoch) {
+      this.peerLastSeenAt = Date.now();
+    }
 
-    if (signal.type === "hello" && this.role === "host") {
+    if (signal.type === "hello") {
+      await this.handleHello(signal);
+      return;
+    }
+    if (signal.type === "offer") {
+      await this.handleOffer(signal);
+      return;
+    }
+    if (signal.type === "answer") {
+      await this.handleAnswer(signal);
+      return;
+    }
+    if (signal.type === "candidate") {
+      await this.handleCandidate(signal);
+      return;
+    }
+
+    if (
+      (this.peerId && signal.from !== this.peerId)
+      || (this.peerEpoch && signal.fromEpoch !== this.peerEpoch)
+      || this.dataChannel?.readyState === "open"
+    ) {
       this.onDiagnostic({
         stage: "hello",
-        code: "hello.received",
-        level: "success",
-        message: "房主收到访客 Hello",
-        details: { restart: signal.restart, peerAlreadyLocked: Boolean(this.peerId) },
-      });
-      if (this.peerId && this.peerId !== signal.from) {
-        this.onDiagnostic({
-          stage: "hello",
-          code: "hello.rejected",
-          level: "warn",
-          message: "房间已锁定，拒绝第三位成员",
-        });
-        this.sendSignal({ type: "rejected", to: signal.from });
-        return;
-      }
-      if (this.peerId === signal.from && this.peer) {
-        const peer = this.peer;
-        if (
-          !signal.restart
-          && (this.dataChannel?.readyState === "open" || peer.connectionState === "connected")
-        ) {
-          this.onDiagnostic({
-            stage: "hello",
-            code: "hello.duplicate.ignored",
-            message: "连接健康，忽略重复 Hello",
-            dedupeKey: "duplicate-hello-ignored",
-          });
-          return;
-        }
-        const offer = peer.localDescription;
-        if (peer.signalingState === "have-local-offer" && offer?.type === "offer") {
-          this.onDiagnostic({
-            stage: "sdp",
-            code: "sdp.offer.resent",
-            message: "重复 Hello 命中当前协商，重新发送现有 Offer",
-            details: { negotiation: negotiationTag(this.activeNegotiationId) },
-          });
-          this.sendSignal({
-            type: "offer",
-            to: signal.from,
-            negotiationId: this.activeNegotiationId,
-            payload: { type: offer.type, sdp: offer.sdp },
-          });
-          return;
-        }
-        await this.startHostOffer(signal.from);
-        return;
-      }
-      this.peerId = signal.from;
-      await this.startHostOffer(signal.from);
-      return;
-    }
-
-    if (signal.type === "offer" && this.role === "guest") {
-      const offer = signal.payload as RTCSessionDescriptionInit;
-      if (offer.type !== "offer") {
-        this.onDiagnostic({
-          stage: "sdp",
-          code: "sdp.offer.invalid",
-          level: "warn",
-          message: "忽略类型无效的 Offer",
-        });
-        return;
-      }
-      this.onDiagnostic({
-        stage: "sdp",
-        code: "sdp.offer.accepted",
-        level: "success",
-        message: "访客开始处理房主 Offer",
-        details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: offer.sdp?.length ?? 0 },
-      });
-      this.peerId = signal.from;
-      this.announceEnabled = false;
-      this.onConnectionChange("connecting", "正在重新建立加密连接");
-      const negotiationId = signal.negotiationId ?? `${signal.from}:${offer.sdp ?? ""}`;
-
-      if (this.handledOfferId === negotiationId) {
-        const answer = this.peer?.localDescription;
-        if (answer?.type === "answer") {
-          this.onDiagnostic({
-            stage: "sdp",
-            code: "sdp.answer.resent",
-            message: "重复 Offer 命中当前协商，重新发送现有 Answer",
-            details: { negotiation: negotiationTag(signal.negotiationId) },
-          });
-          this.sendSignal({
-            type: "answer",
-            to: signal.from,
-            negotiationId: signal.negotiationId,
-            payload: { type: answer.type, sdp: answer.sdp },
-          });
-        }
-        return;
-      }
-
-      this.activeNegotiationId = negotiationId;
-      const peer = this.createPeer();
-      this.handledOfferId = negotiationId;
-      await peer.setRemoteDescription(offer);
-      this.onDiagnostic({
-        stage: "sdp",
-        code: "sdp.offer.remote_applied",
-        level: "success",
-        message: "Offer 已设置为远端描述",
-        details: { negotiation: negotiationTag(signal.negotiationId) },
-      });
-      await this.flushPendingIce();
-      const answer = await peer.createAnswer();
-      this.onDiagnostic({
-        stage: "sdp",
-        code: "sdp.answer.created",
-        message: "访客已创建 Answer",
-        details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: answer.sdp?.length ?? 0 },
-      });
-      await peer.setLocalDescription(answer);
-      this.onDiagnostic({
-        stage: "sdp",
-        code: "sdp.answer.local_applied",
-        level: "success",
-        message: "Answer 已设置为本地描述",
-        details: { negotiation: negotiationTag(signal.negotiationId) },
-      });
-      this.sendSignal({
-        type: "answer",
-        to: signal.from,
-        negotiationId: signal.negotiationId,
-        payload: answer,
+        code: "hello.rejected.ignored",
+        message: "忽略不属于当前连接的拒绝信令",
+        details: { remoteEpoch: signal.fromEpoch },
+        dedupeKey: "rejected-ignored",
       });
       return;
     }
-
-    if (signal.type === "answer" && this.role === "host") {
-      const answer = signal.payload as RTCSessionDescriptionInit;
-      if (!this.peer || answer.type !== "answer") {
-        this.onDiagnostic({
-          stage: "sdp",
-          code: "sdp.answer.invalid",
-          level: "warn",
-          message: "忽略无法应用的 Answer",
-        });
-        return;
-      }
-      if (signal.negotiationId && signal.negotiationId !== this.activeNegotiationId) {
-        this.onDiagnostic({
-          stage: "sdp",
-          code: "sdp.answer.stale",
-          level: "warn",
-          message: "忽略旧协商轮次的 Answer",
-          details: {
-            received: negotiationTag(signal.negotiationId),
-            active: negotiationTag(this.activeNegotiationId),
-          },
-        });
-        return;
-      }
-      if (this.peer.signalingState !== "have-local-offer") {
-        this.onDiagnostic({
-          stage: "sdp",
-          code: "sdp.answer.unexpected_state",
-          level: "warn",
-          message: "当前 SDP 状态无法应用 Answer",
-          details: { signalingState: this.peer.signalingState },
-        });
-        return;
-      }
-      await this.peer.setRemoteDescription(answer);
-      this.onDiagnostic({
-        stage: "sdp",
-        code: "sdp.answer.applied",
-        level: "success",
-        message: "房主已应用访客 Answer",
-        details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: answer.sdp?.length ?? 0 },
-      });
-      await this.flushPendingIce();
-      return;
-    }
-
-    if (signal.type === "candidate") {
-      if (
-        signal.negotiationId
-        && this.activeNegotiationId
-        && signal.negotiationId !== this.activeNegotiationId
-      ) {
-        this.onDiagnostic({
-          stage: "ice",
-          code: "ice.candidate.stale",
-          level: "warn",
-          message: "忽略旧协商轮次的 ICE Candidate",
-          details: {
-            received: negotiationTag(signal.negotiationId),
-            active: negotiationTag(this.activeNegotiationId),
-          },
-          dedupeKey: "stale-candidate",
-        });
-        return;
-      }
-      const candidate = signal.payload as RTCIceCandidateInit;
-      const summary = describeCandidate(candidate);
-      if (this.peer?.remoteDescription) {
-        await this.peer.addIceCandidate(candidate);
-        this.onDiagnostic({
-          stage: "ice",
-          code: "ice.candidate.added",
-          message: "已添加远端 ICE Candidate",
-          details: summary,
-          dedupeKey: `candidate-added-${summary.candidateType}-${summary.protocol}-${summary.relayProtocol ?? ""}`,
-        });
-      } else {
-        this.pendingIce.push(candidate);
-        this.onDiagnostic({
-          stage: "ice",
-          code: "ice.candidate.pending",
-          message: "远端描述尚未就绪，暂存 ICE Candidate",
-          details: { ...summary, pendingCount: this.pendingIce.length },
-          dedupeKey: `candidate-pending-${summary.candidateType}-${summary.protocol}`,
-        });
-      }
-      return;
-    }
-
-    if (signal.type === "rejected") {
-      this.onConnectionChange("disconnected", "这个会话已经有两位成员");
-      this.onNotice("无法加入：会话成员已锁定为两个人。");
-    }
+    this.rejectedUntil = Date.now() + 5_000;
+    this.enableAnnouncing(false);
+    this.onConnectionChange("disconnected", "这个会话已经有两位成员");
+    this.onNotice("无法加入：会话成员已锁定为两个人。");
+    this.onDiagnostic({
+      stage: "hello",
+      code: "hello.rejected",
+      level: "warn",
+      message: "当前页面被已有双人会话拒绝",
+      details: { reason: signal.reason },
+    });
   }
 
   private handleNegotiationFailure(error: unknown) {
+    if (this.disposed) return;
     this.onDiagnostic({
       stage: "sdp",
       code: "sdp.negotiation.failed",

@@ -35,6 +35,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 | 前端 | Next.js 16、React 19、TypeScript 5 |
 | 实时数据 | WebRTC `RTCDataChannel`，可靠且按序 |
 | 信令 | Supabase Realtime Broadcast；无配置时回退到同浏览器 `BroadcastChannel` |
+| 协商协议 | protocol v2；双方 Hello，participant ID 确定临时 Offer 发起方，epoch + negotiation ID 隔离重连轮次 |
 | 应用层加密 | Web Crypto API，随机会话秘密经 SHA-256 导入为 AES-GCM 密钥，每条消息使用独立 12 字节 IV |
 | 历史记录 | 每台设备的 `localStorage`，仅保存 `{id, iv, data}` 密文，最多 200 条 |
 | 消息类型 | 文字、图片、语音；图片/语音单条上限 1.5 MB |
@@ -46,8 +47,8 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 - “P2P”指聊天负载优先由两个浏览器直接传输。若配置 TURN 且直连失败，数据会经过 TURN 中继，但仍由 WebRTC 传输层和应用层 AES-GCM 保护。
 - Supabase 看不到聊天正文，但会处理房间 topic、SDP、ICE Candidate 等建连元数据。
 - 历史只在本机，双方离线时没有服务器信箱，也不会跨设备同步。
-- “只允许两个人”是当前房主页面生命周期内的连接锁，不是账号身份系统。房主刷新后访客槽位会重新开放。
-- 拿到完整邀请链接的人拥有会话秘密，可能冒充访客。请通过可信渠道分享，并在双方页面核对安全码。
+- “只允许两个人”由双方页面内存中的运行时 peer lock 实现，不是账号或服务端身份系统；页面全部关闭后没有持久席位。
+- 拿到完整邀请链接的人拥有会话秘密，可能作为参与者加入。请通过可信渠道分享，并在双方页面核对安全码。
 - Cloudflare TURN key 和 API token 只保存在 Vercel 服务端；浏览器按页面会话获取 24 小时临时凭证。
 - TURN 解决 NAT/防火墙穿透，不等于中国大陆网络保障；网页、Supabase WebSocket 和 Cloudflare TURN 仍需分别实测。
 

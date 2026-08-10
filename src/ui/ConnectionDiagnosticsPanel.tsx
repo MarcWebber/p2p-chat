@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import type { Role } from "@/src/chat/types";
 import type {
   ConnectionDiagnosticEntry,
   ConnectionDiagnostics,
@@ -8,7 +7,6 @@ import type {
 } from "@/src/diagnostics/connectionDiagnostics";
 
 type ConnectionDiagnosticsPanelProps = {
-  role: Role;
   diagnostics: ConnectionDiagnostics;
 };
 
@@ -68,7 +66,7 @@ function formatDetails(entry: ConnectionDiagnosticEntry) {
   return Object.entries(entry.details).map(([key, value]) => `${key}=${value}`).join(" · ");
 }
 
-export function ConnectionDiagnosticsPanel({ role, diagnostics }: ConnectionDiagnosticsPanelProps) {
+export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnosticsPanelProps) {
   const snapshot = useSyncExternalStore(
     diagnostics.subscribe,
     diagnostics.getSnapshot,
@@ -136,7 +134,7 @@ export function ConnectionDiagnosticsPanel({ role, diagnostics }: ConnectionDiag
           ))}
         </div>
         <p className="diagnostics-expectation">
-          期望：凭据就绪 → 信令 SUBSCRIBED → {role === "guest" ? "发出" : "收到"} Hello → Offer/Answer → ICE connected → DataChannel open
+          期望：凭据就绪 → 信令 SUBSCRIBED → 双方 Hello → 选举临时发起方 → Offer/Answer → ICE connected → DataChannel open
         </p>
         <div className="diagnostics-actions">
           <span>Trace {diagnostics.traceId} · 日志已脱敏，仅保存在本页内存</span>

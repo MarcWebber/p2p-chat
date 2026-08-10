@@ -5,7 +5,12 @@ import {
   sanitizeDiagnosticText,
   type ConnectionDiagnosticSink,
 } from "@/src/diagnostics/connectionDiagnostics";
-import { isSignalMessage, type SignalMessage, type SignalStatus } from "@/src/signal/types";
+import {
+  isLegacySignalMessage,
+  isSignalMessage,
+  type SignalMessage,
+  type SignalStatus,
+} from "@/src/signal/types";
 
 type SignalTransportOptions = {
   roomId: string;
@@ -27,7 +32,17 @@ export function hasRemoteSignaling() {
 }
 
 function negotiationTag(message: SignalMessage) {
-  return message.negotiationId ? message.negotiationId.slice(-6) : undefined;
+  return "negotiationId" in message ? message.negotiationId.slice(-6) : undefined;
+}
+
+function signalDetails(message: SignalMessage) {
+  return {
+    hasTarget: "to" in message && Boolean(message.to),
+    restart: message.type === "hello" ? message.restart : undefined,
+    localEpoch: message.fromEpoch,
+    remoteEpoch: "toEpoch" in message ? message.toEpoch : undefined,
+    negotiation: negotiationTag(message),
+  };
 }
 
 function signalStage(type: SignalMessage["type"]) {
@@ -126,12 +141,17 @@ export function createSignalTransport({
     });
     channel.on("broadcast", { event: "signal" }, ({ payload }) => {
       if (!isSignalMessage(payload)) {
+        const legacy = isLegacySignalMessage(payload);
         onDiagnostic({
           stage: "signal",
-          code: "signal.message.invalid",
-          level: "warn",
-          message: "忽略了一条格式无效的信令消息",
+          code: legacy ? "signal.protocol.legacy" : "signal.message.invalid",
+          level: legacy ? "error" : "warn",
+          message: legacy
+            ? "检测到旧版信令，请让双方刷新页面后重试"
+            : "忽略了一条格式无效的信令消息",
+          dedupeKey: legacy ? "legacy-signal" : "invalid-signal",
         });
+        if (legacy) onStatus("unavailable");
         return;
       }
       const stage = signalStage(payload.type);
@@ -140,11 +160,7 @@ export function createSignalTransport({
         stage,
         code: `${code}.received`,
         message: `收到 ${payload.type} 信令`,
-        details: {
-          hasTarget: Boolean(payload.to),
-          restart: payload.restart,
-          negotiation: negotiationTag(payload),
-        },
+        details: signalDetails(payload),
         dedupeKey: payload.type === "candidate" ? "candidate-received" : undefined,
       });
       onMessage(payload);
@@ -197,11 +213,7 @@ export function createSignalTransport({
           code: `${code}.sent`,
           level: message.type === "hello" ? "success" : "info",
           message: `发送 ${message.type} 信令`,
-          details: {
-            hasTarget: Boolean(message.to),
-            restart: message.restart,
-            negotiation: negotiationTag(message),
-          },
+          details: signalDetails(message),
           dedupeKey: message.type === "hello" || message.type === "candidate"
             ? `${message.type}-sent`
             : undefined,
@@ -250,13 +262,27 @@ export function createSignalTransport({
 
   const channel = new BroadcastChannel(`twoonly-signal:${roomId}`);
   channel.onmessage = (event: MessageEvent<unknown>) => {
-    if (!isSignalMessage(event.data)) return;
+    if (!isSignalMessage(event.data)) {
+      const legacy = isLegacySignalMessage(event.data);
+      onDiagnostic({
+        stage: "signal",
+        code: legacy ? "signal.protocol.legacy" : "signal.message.invalid",
+        level: legacy ? "error" : "warn",
+        message: legacy
+          ? "检测到旧版本地信令，请刷新所有同房间页面"
+          : "忽略了一条格式无效的本地信令消息",
+        dedupeKey: legacy ? "legacy-local-signal" : "invalid-local-signal",
+      });
+      if (legacy) onStatus("unavailable");
+      return;
+    }
     const stage = signalStage(event.data.type);
     const code = signalCode(event.data.type);
     onDiagnostic({
       stage,
       code: `${code}.received`,
       message: `本地收到 ${event.data.type} 信令`,
+      details: signalDetails(event.data),
       dedupeKey: event.data.type === "candidate" ? "local-candidate-received" : undefined,
     });
     onMessage(event.data);
@@ -287,6 +313,7 @@ export function createSignalTransport({
         code: `${code}.sent`,
         level: message.type === "hello" ? "success" : "info",
         message: `本地发送 ${message.type} 信令`,
+        details: signalDetails(message),
         dedupeKey: message.type === "hello" || message.type === "candidate"
           ? `local-${message.type}-sent`
           : undefined,

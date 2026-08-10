@@ -1,4 +1,4 @@
-import type { ChatMessage, EncryptedWire } from "@/src/chat/types";
+import type { ChatMessage, DecryptedChatMessage, EncryptedWire } from "@/src/chat/types";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -49,13 +49,13 @@ export function createMessageCrypto(secret: string) {
       };
     },
 
-    async decrypt(wire: EncryptedWire): Promise<ChatMessage> {
+    async decrypt(wire: EncryptedWire): Promise<DecryptedChatMessage> {
       const decrypted = await crypto.subtle.decrypt(
         { name: "AES-GCM", iv: base64ToBytes(wire.iv) },
         await key,
         base64ToBytes(wire.data),
       );
-      return JSON.parse(decoder.decode(decrypted)) as ChatMessage;
+      return JSON.parse(decoder.decode(decrypted)) as DecryptedChatMessage;
     },
   };
 }

@@ -9,7 +9,7 @@ type TwoOnlyViewProps = {
 export function TwoOnlyView({ chat }: TwoOnlyViewProps) {
   if (!chat.ready) return <main className="app-shell" />;
 
-  if (!chat.role) {
+  if (!chat.inRoom) {
     return (
       <LandingScreen
         remoteSignalingEnabled={chat.hasRemoteSignaling}
@@ -18,5 +18,5 @@ export function TwoOnlyView({ chat }: TwoOnlyViewProps) {
     );
   }
 
-  return <ChatScreen {...chat} role={chat.role} />;
+  return <ChatScreen {...chat} />;
 }

@@ -89,7 +89,7 @@ channel
 
 - `persistSession: false`：项目不使用 Supabase Auth，不在本地维护登录会话。
 - `ack: true`：要求 Realtime 服务确认已接收 Broadcast。
-- 订阅成功后访客才开始发送 `hello`，避免发送走订阅前的 HTTP 路径。
+- 订阅成功后两个页面才开始发送 protocol v2 `hello`，避免信令通道尚未就绪时丢失对端发现消息。
 - 卸载或切换房间时调用 `removeChannel` 释放连接。
 
 官方文档说明：客户端订阅后，Broadcast 通过 WebSocket 发送；公共频道允许未登录客户端订阅。参见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast) 与 [Realtime Concepts](https://supabase.com/docs/guides/realtime/concepts)。这也是当前 MVP 快速建连和严格身份控制之间的主要取舍。
@@ -179,7 +179,7 @@ npm run build
 3. 双向文字消息；
 4. 1.5 MB 内图片与录音；
 5. 刷新后从本地密文恢复；
-6. 第三位访客被拒绝；
+6. 已连接的两个页面都保持 peer lock，第三个页面收到 `rejected(room-full)`；
 7. 新建会话后旧身份锁、消息和连接状态被清理；
 8. 清空历史只影响当前设备；
 9. 浏览器 Console 无错误；

@@ -38,7 +38,7 @@ export type ConnectionDiagnosticSink = (event: ConnectionDiagnosticEvent) => voi
 const MAX_ENTRIES = 200;
 const NOTIFY_DELAY_MS = 120;
 const DEDUPE_WINDOW_MS = 30_000;
-const SENSITIVE_DETAIL_KEY = /^(?:secret|credential|password|token|authorization|sdp|candidate|roomId|senderId|apiKey)$/i;
+const SENSITIVE_DETAIL_KEY = /^(?:secret|credential|password|token|authorization|sdp|candidate|roomId|senderId|participantId|peerId|apiKey)$/i;
 
 export function sanitizeDiagnosticText(value: unknown) {
   const text = value instanceof Error

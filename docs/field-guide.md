@@ -10,9 +10,9 @@
 
 > 这张总览图由 OpenAI ImageGen 生成，用来快速建立空间感。后文的 Mermaid 图以协议和源码为准。
 
-TwoOnly 运行时有六个角色：
+TwoOnly 运行时有六类参与组件：
 
-| 角色 | 做什么 | 不做什么 |
+| 组件 | 做什么 | 不做什么 |
 | --- | --- | --- |
 | 浏览器 A / B | UI、加解密、WebRTC、本地历史 | 不把聊天正文交给业务服务器 |
 | Vercel | 发网页、运行 TURN 临时凭证接口 | 不长期维持房间状态 |
@@ -50,43 +50,49 @@ WebRTC 官方入门也把信令定义为应用自己提供的异步交换通道�
 
 ## 信令：先让两个陌生浏览器互相介绍
 
-TwoOnly 的房主负责创建 DataChannel 和 Offer，访客负责应答。完整顺序如下：
+TwoOnly v2 不再给用户分配固定房主/访客角色。每次页面加载都会生成随机 `participantId`，双方订阅信令后都广播 Hello；两端用同一条确定性规则选出本轮临时 Offer 发起方。完整顺序如下：
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant H as 房主浏览器
+  participant A as 浏览器 A
   participant S as Supabase Realtime
-  participant G as 访客浏览器
+  participant B as 浏览器 B
   participant I as STUN / TURN
 
-  G->>S: hello(senderId)
-  S->>H: 转发 hello
-  H->>H: 锁定首个 senderId
-  H->>H: 创建 PeerConnection 和 DataChannel
-  H->>H: createOffer + setLocalDescription
-  H->>S: offer(negotiationId)
-  S->>G: 转发 offer
-  G->>G: setRemoteDescription
-  G->>G: createAnswer + setLocalDescription
-  G->>S: answer(negotiationId)
-  S->>H: 转发 answer
-  H->>H: setRemoteDescription
-  H->>I: 收集 host / srflx / relay
-  G->>I: 收集 host / srflx / relay
-  H-->>S: candidate
-  G-->>S: candidate
-  S-->>G: 对端 candidate
-  S-->>H: 对端 candidate
-  H<<->>G: Connectivity Checks
-  H<<->>G: DataChannel open
+  A->>S: hello(protocol=2, A, epochA)
+  B->>S: hello(protocol=2, B, epochB)
+  S-->>A: B 的 hello
+  S-->>B: A 的 hello
+  A->>A: 锁定 B；比较 participantId
+  B->>B: 锁定 A；得到同一选举结果
+  Note over A,B: 较小 ID 临时负责 Offer 与 DataChannel
+  A->>A: 创建 PeerConnection 和 DataChannel
+  A->>A: createOffer + setLocalDescription
+  A->>S: offer(epoch pair, negotiationId)
+  S->>B: 转发 offer
+  B->>B: setRemoteDescription
+  B->>B: createAnswer + setLocalDescription
+  B->>S: answer(epoch pair, negotiationId)
+  S->>A: 转发 answer
+  A->>A: setRemoteDescription
+  A->>I: 收集 host / srflx / relay
+  B->>I: 收集 host / srflx / relay
+  A-->>S: candidate(epoch pair, negotiationId)
+  B-->>S: candidate(epoch pair, negotiationId)
+  S-->>B: 对端 candidate
+  S-->>A: 对端 candidate
+  A<<->>B: Connectivity Checks
+  A<<->>B: DataChannel open；双方完全对等
 ```
 
 这里有几个很实战的细节：
 
 - `setLocalDescription()` 和 `setRemoteDescription()` 的顺序不能乱；
-- Candidate 可能比远端 SDP 更早到，所以 TwoOnly 会先放进 `pendingIce`；
-- 每次协商带一个新的 `negotiationId`，旧 Answer 和旧 Candidate 不会污染新连接；
+- Candidate 可能比远端 SDP 更早到，所以 TwoOnly 会按参与者、双方 epoch 与 `negotiationId` 放进对应的 `pendingIce` 分桶；
+- 每次协商带一个新的 `negotiationId`，本端每次重连递增 local epoch，因此旧 Answer 和旧 Candidate 不会污染新连接；
+- v2 信令携带明确的协议版本；格式不匹配的旧信令不会进入当前状态机；
+- `participantId` 较小的一端只是本轮临时 Offer 发起方，不拥有更多权限；
 - 所有信令串进同一条 Promise 队列，避免两个异步分支同时修改 `signalingState`；
 - 重复 Offer 不一定是错误，网络重试时可以重发已经生成的 Answer。
 
@@ -141,7 +147,7 @@ TURN 会消耗真实带宽，因此通常是兜底而不是默认路径。TwoOnl
 
 ## DataChannel：这条双工通道是怎么来的
 
-房主创建一个可靠、按序的 `RTCDataChannel`，访客从 `ondatachannel` 事件接到同一条逻辑通道。通道一旦 `open`，双方都能 `send()`，也都能收到 `message`，因此它是全双工而不是请求—响应。
+选举出的临时 Offer 发起方创建一个可靠、按序的 `RTCDataChannel`，另一端从 `ondatachannel` 事件接到同一条逻辑通道。通道一旦 `open`，这个临时差异就结束了：双方都能 `send()`，也都能收到 `message`，因此它是全双工而不是请求—响应。
 
 底层可以粗略理解为：
 
@@ -190,12 +196,13 @@ sequenceDiagram
 邀请链接长这样：
 
 ```text
-https://站点/?room=<roomId>&role=guest#<secret>
+https://站点/?room=<roomId>#<secret>
 ```
 
 - `roomId` 用来选择 Supabase topic；
-- `role` 决定谁发 Offer、谁发 Answer；
 - `secret` 放在 URL Fragment，也就是 `#` 后面。
+
+旧版 `&role=host` / `&role=guest` 链接仍能打开，但 v2 会忽略角色参数；它只在恢复旧版本地消息方向时作为兼容提示。新复制的链接没有角色，两个人打开的是同一种 URL。
 
 Fragment 不会作为 HTTP 请求的一部分发给 Vercel。浏览器取到 `secret` 后计算 SHA-256，再把结果导入为不可导出的 AES-GCM 密钥。之所以可以直接哈希，是因为这里的 secret 本身是约 256 位随机值；如果换成用户口令，就必须使用专门的口令派生算法，而不能照搬。
 
@@ -205,20 +212,26 @@ Fragment 不会作为 HTTP 请求的一部分发给 Vercel。浏览器取到 `se
 
 TwoOnly 的双人限制很实用，但要准确描述：
 
-1. 访客定时发送 `hello(senderId)`；
-2. 房主接受第一个 senderId，并把它记为 `peerId`；
-3. 后来的其他 senderId 收到 `rejected`；
-4. 断线重连时，同一标签页通过 `sessionStorage` 尽量复用 senderId。
+1. 每个页面加载时生成新的随机 `participantId`；
+2. 双方定时发送 protocol v2 `hello(participantId, epoch)`；
+3. 双方各自把第一个可用对端记为 `peerId`，并用 ID 字符串顺序选出临时 Offer 发起方；
+4. DataChannel 已打开的双人会话会向第三个页面发送 `rejected(room-full)`，不会因锁超时让位；
+5. 本端重连递增 local epoch，对端以 remote epoch 识别新旧页面轮次；通道未打开，且旧 Peer 已失败/关闭或连续 10 秒没有旧 peer 信令时，新的页面实例才可接替。
 
 ```mermaid
 flowchart TD
-  HELLO["收到 hello"] --> LOCK{"房主已有 peerId?"}
-  LOCK -->|"没有"| ACCEPT["锁定当前访客并发 Offer"]
-  LOCK -->|"就是同一人"| RESUME["继续或重新协商"]
-  LOCK -->|"是另一人"| REJECT["发送 rejected"]
+  HELLO["任一端收到 hello"] --> LOCK{"本端已有可用 peerId?"}
+  LOCK -->|"没有"| ACCEPT["锁定对端并完成确定性选举"]
+  LOCK -->|"同一 participant + 新 epoch"| RESUME["关闭旧 Peer，进入新轮次"]
+  LOCK -->|"另一 participant + 已打开通道或锁仍有效"| REJECT["发送 rejected(room-full)"]
+  LOCK -->|"另一 participant + 通道未开 + 旧 Peer 失效"| REPLACE["替换旧 peer lock"]
+  ACCEPT --> ELECT{"本端 ID 更小?"}
+  REPLACE --> ELECT
+  ELECT -->|"是"| OFFER["本端创建 Offer / DataChannel"]
+  ELECT -->|"否"| ANSWER["等待并处理 Offer"]
 ```
 
-这叫**运行时席位锁**，不叫严格身份认证。房主刷新会清空内存锁；拿到完整邀请链接的人也同时拿到了 roomId 和 secret。正式产品若真的要求“只认这两台设备”，还需要一次性邀请核销、设备公钥、签名握手和持久化授权。
+这叫**双方运行时 peer lock**，不叫严格身份认证。锁只存在于页面内存；页面全部关闭后，服务端没有持久席位。拿到完整邀请链接的人也同时拿到了 roomId 和 secret，仍可能抢先占位。正式产品若真的要求“只认这两台设备”，还需要一次性邀请核销、设备公钥、签名握手和持久化授权。
 
 ## 断线重连：项目里最容易被低估的一段
 
@@ -242,14 +255,16 @@ stateDiagram-v2
 几个经验比“加一个 reconnect 按钮”更重要：
 
 - 不要让旧 PeerConnection 的异步回调改写新会话状态；
-- 重连必须生成新的 `negotiationId`；
-- 访客重启 `hello`，房主重新创建带 `iceRestart` 的 Offer；
+- 重连必须递增 local epoch，并为新协商生成 `negotiationId`；
+- 双方恢复 `hello`，重新执行确定性选举；被选中的一端创建带 `iceRestart` 的 Offer；
 - 信令短暂掉线但 DataChannel 还活着时，不要误报聊天已断开；
 - 自动重试和手动重试必须复用同一个状态机。
 
 ## 历史记录为什么只保存在本地
 
 用户提出“不要一次性，聊天记录保留一下”以后，我们选择了一个边界很清楚的方案：每台设备最多保存 200 条 `EncryptedWire`，刷新时使用邀请链接里的 secret 本地解密。
+
+v2 不再把消息作者写成 host/guest，而是使用当前标签页视角的 `self / peer`。标签页发送消息时会把 message ID 记进本标签的 `sessionStorage`；刷新后用这份 ID 列表恢复“我/对方”。旧 role 链接只在读取 v1 密文作者时提供兼容提示。
 
 优点是服务端没有聊天数据库，隐私模型简单；代价也同样明确：
 

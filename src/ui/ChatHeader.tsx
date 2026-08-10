@@ -1,7 +1,6 @@
-import type { ConnectionState, Role } from "@/src/chat/types";
+import type { ConnectionState } from "@/src/chat/types";
 
 type ChatHeaderProps = {
-  role: Role;
   connection: ConnectionState;
   connectionMode: string;
   safetyCode: string;
@@ -12,7 +11,6 @@ type ChatHeaderProps = {
 };
 
 export function ChatHeader({
-  role,
   connection,
   connectionMode,
   safetyCode,
@@ -29,7 +27,7 @@ export function ChatHeader({
       </div>
       <div className="header-actions">
         <span className="safety-code" title="请与对方核对安全码">安全码 {safetyCode}</span>
-        {role === "host" && connection !== "connected" ? (
+        {connection !== "connected" ? (
           <button className="invite-button" onClick={onCopyInvite}>{copied ? "已复制" : "邀请对方"}</button>
         ) : null}
         {connection === "disconnected" ? (

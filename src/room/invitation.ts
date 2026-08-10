@@ -1,37 +1,36 @@
-import type { Role } from "@/src/chat/types";
+import type { LegacyRole } from "@/src/chat/types";
 import { randomToken } from "@/src/crypto/messageCrypto";
 
 export type RoomInvitation = {
   roomId: string;
-  role: Role;
   secret: string;
+  legacyRole?: LegacyRole;
 };
 
-function isRole(value: string | null): value is Role {
+function isLegacyRole(value: string | null): value is LegacyRole {
   return value === "host" || value === "guest";
 }
 
 export function readRoomInvitation(location: Location): RoomInvitation | null {
   const params = new URLSearchParams(location.search);
   const roomId = params.get("room") ?? "";
-  const role = params.get("role");
   const secret = location.hash.slice(1);
-  if (!roomId || !secret || !isRole(role)) return null;
-  return { roomId, role, secret };
+  if (!roomId || !secret) return null;
+  const role = params.get("role");
+  return {
+    roomId,
+    secret,
+    ...(isLegacyRole(role) ? { legacyRole: role } : {}),
+  };
 }
 
-export function createHostRoom(): RoomInvitation {
+export function createRoomInvitation(): RoomInvitation {
   return {
     roomId: randomToken(9),
-    role: "host",
     secret: randomToken(32),
   };
 }
 
 export function createRoomUrl(origin: string, invitation: RoomInvitation) {
-  return `${origin}/?room=${invitation.roomId}&role=${invitation.role}#${invitation.secret}`;
-}
-
-export function createGuestInviteUrl(origin: string, roomId: string, secret: string) {
-  return createRoomUrl(origin, { roomId, secret, role: "guest" });
+  return `${origin}/?room=${encodeURIComponent(invitation.roomId)}#${invitation.secret}`;
 }

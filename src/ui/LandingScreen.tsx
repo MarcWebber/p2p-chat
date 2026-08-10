@@ -31,8 +31,8 @@ export function LandingScreen({ remoteSignalingEnabled, onCreateRoom }: LandingS
         <section className="wiki-card" aria-labelledby="wiki-title">
           <div className="wiki-heading"><span>使用说明</span><strong id="wiki-title">快速开始 Wiki</strong></div>
           <ol className="wiki-steps">
-            <li><b>创建聊天</b><span>房主点击左侧按钮，生成专属双人房间。</span></li>
-            <li><b>分享完整链接</b><span>复制邀请链接发给另一人，链接末尾密钥不能遗漏。</span></li>
+            <li><b>创建聊天</b><span>点击左侧按钮，生成一条双方通用的双人邀请链接。</span></li>
+            <li><b>分享完整链接</b><span>把同一链接发给另一人，链接末尾密钥不能遗漏。</span></li>
             <li><b>等待安全连接</b><span>状态变绿后即可发送文字、图片和语音。</span></li>
           </ol>
           <details open>

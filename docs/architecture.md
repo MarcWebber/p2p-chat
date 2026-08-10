@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-  subgraph A["房主浏览器"]
+  subgraph A["浏览器 A"]
     AUI["聊天 UI"]
     AC["AES-GCM 加密/解密"]
     AP["RTCPeerConnection + DataChannel"]
@@ -23,7 +23,7 @@ flowchart LR
     ICE["STUN / 可选 TURN"]
   end
 
-  subgraph B["访客浏览器"]
+  subgraph B["浏览器 B"]
     BP["RTCPeerConnection + DataChannel"]
     BC["AES-GCM 加密/解密"]
     BUI["聊天 UI"]
@@ -63,17 +63,17 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 | `src/diagnostics` | 建连日志、脱敏、内存环形缓冲和 Console 输出 | 持久化日志、记录密钥或消息内容 |
 | `src/signal` | 信令类型校验、Supabase/BroadcastChannel 适配 | 聊天正文、PeerConnection 生命周期 |
 | `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和密文分片传输 | React UI、本地历史 |
-| `src/storage` | `localStorage` 密文历史、`sessionStorage` 发送方身份 | 加解密、Supabase Database/Storage |
-| `src/room` | 邀请链接解析、生成和角色判断 | 连接状态机 |
+| `src/storage` | `localStorage` 密文历史、`sessionStorage` 本标签发送消息 ID | 加解密、Supabase Database/Storage |
+| `src/room` | 无角色邀请链接的解析、生成与旧链接兼容 | 连接状态机 |
 | `src/media` | 文件 Data URL、文件限制、录音生命周期 | 消息加密和发送 |
 | `src/protocol` | 密文信封的分片编码、重组和协议格式 | 网络连接、明文消息 |
 | `src/ui` | 首页、聊天页和展示组件 | 直接访问 Supabase、WebRTC 或浏览器存储 |
 
 这里特别需要区分：Supabase 当前只提供 Realtime Broadcast 信令，不保存聊天消息，因此它属于 `signal`，不是 `storage`。`storage` 只封装当前浏览器内的持久化。
 
-## 3. 邀请链接与房间身份
+## 3. 邀请链接与页面身份
 
-房主创建聊天时生成两个随机值：
+任意一端创建聊天时生成两个随机值：
 
 ```text
 roomId = randomToken(9)      # Supabase topic 标识
@@ -83,23 +83,30 @@ secret = randomToken(32)     # 约 256 位随机会话秘密
 邀请链接格式：
 
 ```text
-https://站点/?room=<roomId>&role=guest#<secret>
+https://站点/?room=<roomId>#<secret>
 ```
 
 - `room` 用于选择信令 topic：`twoonly:<roomId>`。
-- `role` 决定浏览器以房主还是访客身份参与 Offer/Answer。
 - `secret` 放在 URL Fragment 中，浏览器不会把 Fragment 作为 HTTP 请求路径发送给 Vercel；客户端脚本从 `window.location.hash` 读取它并派生 AES 密钥。
-- 房主与访客显示从同一 `secret` 计算出的安全码，用户可通过另一个可信渠道核对。
+- 两端显示从同一 `secret` 计算出的安全码，用户可通过另一个可信渠道核对。
+- 每次页面加载都会生成新的随机 `participantId`。它用于本次页面的信令寻址和 Offer 发起方选举，不是账号或长期设备身份。
+
+旧版曾生成 `?room=<roomId>&role=host#<secret>` 与 `role=guest` 链接。v2 仍会解析这两种链接以恢复已有本地历史，但 `role` 只作为旧消息方向迁移提示，不再决定谁发送 Offer 或创建 DataChannel；新复制的链接不再包含该参数。
 
 ## 4. “只允许两个人”的实现
 
-每个浏览器实例生成一个随机 `senderId`。访客订阅信令频道后周期性发送 `hello`；房主的 `WebRtcSession` 收到首个访客后锁定其 `senderId`，并只向该 ID 发送 Offer、Answer 相关消息。后续不同 ID 会收到 `rejected`。
+每个页面实例生成随机 `participantId`，并在 Supabase 订阅成功后周期性广播 protocol v2 `hello`。双方收到对方 Hello 后各自在内存中锁定同一个 peer，并通过 `participantId` 字符串比较得到一致结论：较小 ID 是本轮临时 Offer 发起方，同时创建 DataChannel；另一端处理 Offer 并返回 Answer。连接打开后，两端能力完全相同，没有长期房主或访客角色。
+
+信令同时携带 `fromEpoch`、面向对端的 `toEpoch` 和每轮随机 `negotiationId`。本端重连时递增 local epoch；收到对方更大的 remote epoch 时关闭旧 Peer 并进入新轮次。Answer 和 Candidate 必须同时命中参与者、双方 epoch 与 negotiation ID；远端描述尚未就绪时，Candidate 也按这组键分桶缓存，避免旧轮次污染新连接。
+
+第三个页面广播 Hello 时，两个已连接页面都会因为 peer lock 已被占用而回复 `rejected(room-full)`。DataChannel 已打开时不会因超时让位；只有通道没有打开，并且旧 Peer 已明确失败/关闭，或连续 10 秒没有旧 peer 信令时，锁才允许新的页面实例接替。这是一种运行时恢复策略，不是服务端成员认证。
 
 这能满足临时双人房间的 MVP 需求，但有三个明确限制：
 
-1. 锁存在房主内存中，房主刷新后会丢失。
-2. 没有账号或公钥身份，先到达的访客占用唯一位置。
+1. 锁分别存在两个页面的内存中；页面全部关闭后没有持久成员席位。
+2. 没有账号或公钥身份，拿到完整链接并先完成互锁的页面占用位置。
 3. 公共 Broadcast topic 不是访问控制；随机 `roomId` 和邀请秘密降低误入概率，但不是认证机制。
+4. 三个页面近同时首次进入时，可能因 Hello 到达顺序不同形成临时非对称锁；当前没有服务端成员槽仲裁，需关闭多余页面后重连。
 
 若要升级为严格的双人产品，应增加一次性邀请核销、持久化成员公钥、签名握手和私有 Realtime Channel 授权。
 
@@ -108,11 +115,13 @@ https://站点/?room=<roomId>&role=guest#<secret>
 连接状态为 `waiting → connecting → connected`，失败或关闭后进入 `disconnected`。新建聊天会同时清理：
 
 - 旧 PeerConnection 与 DataChannel；
-- 对方身份锁、协商 ID、已处理 Offer 和待处理 ICE；
+- 对方身份锁、local/remote epoch、协商 ID、已处理 Offer 和按轮次缓存的 ICE；
 - 未完成消息分片、输入框和当前消息列表；
 - 连接模式和提示状态。
 
 `WebRtcSession` 统一持有 PeerConnection、DataChannel、协商 ID、信令队列和定时器。PeerConnection、DataChannel 与消息回调都会检查自己是否仍是当前实例；控制器销毁会话后，旧实例也不能再写入 React 状态，避免异步 `close` 或 `message` 污染新房间。
+
+聊天消息中的 `author` 使用 `self / peer`，只表达当前标签页的 UI 方向。每次发送时，本标签页把消息 ID 追加到 `sessionStorage` 的 `twoonly:<roomId>:sent-message-ids:v2`；刷新后先解密 `localStorage` 历史，再用这份 ID 列表恢复“我/对方”。旧版密文里的 `host / guest` author 仍能借助旧 URL role 提示迁移读取，但不会再写入新消息。
 
 ## 6. 文件结构
 
@@ -145,7 +154,7 @@ twoonly/
 │   │   ├── types.ts                # 信令协议与结构校验
 │   │   └── signalTransport.ts      # Supabase/本地信令适配器
 │   ├── storage/
-│   │   └── chatStorage.ts          # 密文历史与发送方身份
+│   │   └── chatStorage.ts          # 密文历史与本标签发送消息 ID
 │   ├── ui/
 │   │   ├── TwoOnlyView.tsx         # 页面状态分流
 │   │   ├── LandingScreen.tsx       # 首页与 Wiki
@@ -205,4 +214,4 @@ flowchart TD
 - WebRTC 只传输 `EncryptedWire`，不持有 AES 密钥或明文消息；
 - Storage 只保存密文信封，不自行加解密；
 - Crypto 的密钥实例绑定单个房间秘密，不能跨房间复用；
-- 当前 Signal 只有结构校验和目标 ID 路由，没有数字签名。未来增加信令认证时，应在 Crypto 中增加独立的 HMAC/签名模块，而不是把它伪装成已有能力。
+- 当前 Signal protocol v2 只做结构、版本、目标 ID、epoch 与协商轮次校验，没有数字签名。未来增加信令认证时，应在 Crypto 中增加独立的 HMAC/签名模块，而不是把它伪装成已有能力。

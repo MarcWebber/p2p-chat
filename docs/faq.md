@@ -36,7 +36,7 @@ flowchart LR
 
 日志刻意不记录完整邀请链接、fragment secret、安全码、房间 ID、TURN username/credential、Supabase key、完整 SDP、原始 ICE Candidate/IP 或消息内容。不要为了排障再手动把这些敏感数据粘贴进公开聊天。
 
-### Guest 正常建连的期望顺序
+### 两端共同的期望顺序
 
 ```text
 client.invitation.ready
@@ -45,33 +45,20 @@ credentials.success               HTTP 200，取得临时 TURN 配置
 credentials.ready                 source=dynamic，turnConfigured=true
 signal.subscribe.start
 signal.subscribed                 Supabase Realtime 已订阅
-hello.sent / hello.ack             发出 Hello，服务端确认 ok
-sdp.offer.received
-sdp.offer.remote_applied
-sdp.answer.sent / sdp.answer.ack
-ice.gathering.* / ice.candidate.*
-ice.connected 或 ice.completed
-data.open
-ice.selected_pair                 direct 或 relay
+hello.sent / hello.ack             双方都发 Hello，服务端确认 ok
+hello.received / peer.locked       收到并锁定另一位参与者
+peer.elected                       双方得到同一个临时 Offer 发起方
 ```
 
-### Host 正常建连的期望顺序
+随后只有日志分工不同，不代表权限不同：
 
 ```text
-client.invitation.ready
-credentials.request.start
-credentials.success / credentials.ready
-signal.subscribed
-hello.received                    收到 Guest 的 Hello
-sdp.offer.created / sdp.offer.ack
-sdp.answer.received
-sdp.answer.applied
-ice.connected 或 ice.completed
-data.open
-ice.selected_pair
+临时 Offer 发起方：sdp.offer.created / sdp.offer.ack → sdp.answer.received / sdp.answer.applied
+另一端：          sdp.offer.received / sdp.offer.remote_applied → sdp.answer.sent / sdp.answer.ack
+两端共同：        ice.gathering.* / ice.candidate.* → ice.connected 或 completed → data.open → ice.selected_pair
 ```
 
-页面上的阶段灯只负责快速定位，排查时仍应复制完整日志。房主在访客尚未上线时，Hello、SDP、ICE 和通道保持“等待”是正常现象。
+Offer 发起方由当前页面随机 `participantId` 的字符串顺序决定，下次打开可能互换。页面上的阶段灯只负责快速定位，排查时仍应复制完整日志；另一位参与者尚未上线时，SDP、ICE 和通道保持“等待”是正常现象。
 
 ### 日志停在哪里，应该查哪里？
 
@@ -81,8 +68,9 @@ ice.selected_pair
 | `credentials.request.timeout` | 客户端已主动中止凭据请求 | 查 `/api/turn-credentials` 可达性；客户端会继续以静态配置或 STUN-only 启动信令 |
 | `credentials.response.http_error` 且 `status=502` | 浏览器已到 Vercel，Vercel 到 Cloudflare 或 Cloudflare 配置失败 | 用 `requestId` 对照 Vercel Function 日志 |
 | `credentials.success` 后没有 `signal.subscribed` | TURN 凭据正常，Supabase Realtime WebSocket 未完成订阅 | 查 Supabase 域名、WSS、代理和运营商网络 |
-| Guest 有 `hello.ack`，Host 没有 `hello.received` | Guest 已把广播交给信令服务，但 Host 没收到 | 检查 Host 是否在线、双方房间链接是否一致、Realtime 广播是否投递 |
-| Host 有 `hello.received`，没有 `sdp.offer.created` | 问题位于 Host 的 WebRTC/Offer 创建 | 查紧随其后的 `sdp.negotiation.failed` |
+| A 有 `hello.ack`，B 没有 `hello.received` | A 已把广播交给信令服务，但 B 没收到 | 检查 B 是否在线、双方房间链接是否一致、Realtime 广播是否投递 |
+| 双方都有 `hello.received`，没有 `peer.elected` | 对端发现成功，但 peer lock 或 epoch 判定没有完成 | 查 `hello.busy`、`hello.stale`、`signal.message.stale_epoch` |
+| `peer.elected localIsOfferer=true` 后没有 `sdp.offer.created` | 问题位于本轮临时发起端的 Offer 创建 | 查紧随其后的 `sdp.negotiation.failed` |
 | Offer/Answer 完整，没有 relay candidate | SDP 信令正常，当前设备无法从 TURN 获得 relay 地址 | 分别测试 TURN UDP、TCP、TLS 443 |
 | 已有 relay candidate，但出现 `ice.failed` | TURN allocation 可能成功，但 ICE connectivity check 没建成可用路径 | 查 Candidate 轮次、端口、网络丢包和服务端流量 |
 | `ice.connected` 后没有 `data.open` | ICE 已连通，问题位于 SCTP/DataChannel 层 | 比对两端 DataChannel 与 PeerConnection 状态 |
@@ -97,7 +85,7 @@ TwoOnly 的信令是在 ICE 配置解析完成后启动的。因此，只要已�
 
 ## 如何确定对方能够访问 TURN？
 
-不要只在房主设备测试。房主和访客应当分别在各自真实网络完成下面的检查。
+不要只在一个页面测试。参与者 A、B 应当分别在各自真实网络完成下面的检查。
 
 | 验证层级 | 怎么看 | 成功能证明什么 | 仍然不能证明什么 |
 | --- | --- | --- | --- |
@@ -110,7 +98,7 @@ TwoOnly 的信令是在 ICE 配置解析完成后启动的。因此，只要已�
 ### 最可靠的现场测试
 
 1. 在生产环境临时设置 `NEXT_PUBLIC_ICE_TRANSPORT_POLICY=relay`，重新部署。该变量是前端构建变量，仅修改而不重新部署不会生效。
-2. 房主和访客分别使用待验证的真实网络打开全新的页面，避免用同一台设备、同一 Wi-Fi 得出结论。
+2. 参与者 A、B 分别使用待验证的真实网络打开全新的页面，避免用同一台设备、同一 Wi-Fi 得出结论。
 3. 两端都应建立连接，并显示“TURN 加密中继”。若只显示“WebRTC 已连接”，浏览器统计可能尚未提供可判定的候选对，继续看 WebRTC 内部统计。
 4. 双方各发送一条文字消息，再发送一张小图片。只有双向都成功才算通过。
 5. 在 Chromium 打开 `chrome://webrtc-internals`，找到本次 `RTCPeerConnection`，确认 selected/nominated Candidate Pair 的状态为 `succeeded`，候选类型含 `relay`，并观察 `bytesSent` 与 `bytesReceived` 都在增加。Firefox 可查看 `about:webrtc`。
@@ -166,7 +154,7 @@ TwoOnly 现在读取 `RTCPeerConnection.getStats()` 中实际选中的 Candidate
 - 选中直连候选：显示“WebRTC 点对点直连”；
 - 浏览器暂时没暴露足够统计：显示“WebRTC 已连接”。
 
-## Guest 显示 TURN 正常，Host 却一直显示断开，正常吗？
+## 一端显示 TURN 正常，另一端却一直显示断开，正常吗？
 
 短暂不一致可能来自两端状态事件和统计更新的时间差，但持续不一致不正常。一条已经建立的 ICE Candidate Pair 在逻辑上是同一条双向路径；两端看到的 local/remote 方向会互换，状态文案不应长期一个成功、一个失败。
 
@@ -208,7 +196,7 @@ TwoOnly 现在读取 `RTCPeerConnection.getStats()` 中实际选中的 Candidate
 
 Cloudflare 当前通过 GraphQL Analytics API 提供 `concurrentConnections`、`ingressBytes` 和 `egressBytes`，并可按 region、key ID、username 或 custom identifier 等维度筛选。它适合回答：测试时是否真的有 TURN 分配和中继流量、流量来自哪个区域、是否只有单向字节。
 
-但它不认识 TwoOnly 的“房主/访客”含义，也看不到 AES-GCM 加密后的聊天正文。排查时要记录准确测试时间；如果后续为凭证签发加入不含隐私的 `customIdentifier`，会更容易将一次会话与服务端指标对应起来。
+但它不认识 TwoOnly 的参与者 A/B、临时 Offer 发起方等应用语义，也看不到 AES-GCM 加密后的聊天正文。排查时要记录准确测试时间；如果后续为凭证签发加入不含隐私的 `customIdentifier`，会更容易将一次会话与服务端指标对应起来。
 
 ## 为什么连接会反复“正在自动重连”？
 
@@ -256,15 +244,30 @@ WebRTC 的 `disconnected` 可能只是短暂抖动，过早销毁连接反而会
 
 ## 完整邀请链接为什么不能公开？
 
-链接 fragment 中包含会话秘密。fragment 通常不会随 HTTP 请求发送到服务器，但拿到完整链接的人仍可能以访客身份进入，并可推导本次聊天的应用层密钥。应通过可信渠道分享，并在双方页面核对安全码。
+链接 fragment 中包含会话秘密。fragment 通常不会随 HTTP 请求发送到服务器，但拿到完整链接的人仍可能作为参与者加入，并可推导本次聊天的应用层密钥。应通过可信渠道分享，并在双方页面核对安全码。
+
+## 旧链接里的 `role=host` / `role=guest` 还起作用吗？
+
+不再决定连接行为。v2 的新链接统一为 `?room=<id>#<secret>`；旧链接仍可打开，以免已分享的地址和本机历史突然失效，但其中的 `role` 只用于迁移旧版 `author` 方向。两端都会发送 Hello，再由随机 participant ID 确定本轮临时 Offer 发起方。
+
+这里兼容的是旧 URL 和本地历史，不代表 v1/v2 客户端信令互通。部署 protocol v2 后应让双方都刷新；如果日志出现 `signal.protocol.legacy`，说明房间里仍有旧页面。
+
+本地双标签测试也应打开同一条新链接。每个页面加载都会获得新的 participant ID，不需要手工把一个链接改成 host、另一个改成 guest。
 
 ## 第三个人为什么有时刷新后又能尝试进入？
 
-“只允许两个人”目前是房主页面生命周期内的运行时连接锁，不是服务端账号与成员系统。房主刷新后，这个锁会重置。正式成员控制需要服务端持久化成员公钥、一次性邀请核销和房间权限。
+“只允许两个人”目前由两个页面各自的运行时 peer lock 实现，不是服务端账号与成员系统。DataChannel 已打开时，第三个页面会被双方以 `room-full` 拒绝且不会因超时抢占。只有通道未打开，并且旧 Peer 已失败/关闭，或连续 10 秒没有旧 peer 信令时，新页面实例才可接替；页面全部关闭后也没有持久席位。
+
+收到 `room-full` 后，第三页会暂停发送 Hello 至少 5 秒再自动尝试，无需刷新；点击“立即重连”会清除这段退避。这个自动重试是为了让真正断开的旧页面能够被替换，不代表第三页可以抢走仍然打开的连接。正式成员控制仍需要服务端持久化成员公钥、一次性邀请核销和房间权限。
+
+还有一个原型边界：如果三个页面几乎同时首次进入，它们可能因信令到达顺序不同而先锁到不同对象，短时间内互相拒绝，当前没有服务端仲裁来保证自动选出同一对。验收时应保留两页、关闭多余页面并点一次“立即重连”；严格产品需要由服务端原子分配两个成员槽。
 
 ## 一份够用的验收清单
 
-- [ ] 房主和访客使用两台真实设备、两个不同网络。
+- [ ] 参与者 A、B 使用两台真实设备、两个不同网络，并打开同一条无角色邀请链接。
+- [ ] 双方日志都有 `hello.sent`、`hello.received` 与一致的 `peer.elected` 结果。
+- [ ] 临时 Offer 发起方与另一端分别走完 Offer/Answer，信令携带 protocol v2、双方 epoch 与同一 negotiation ID。
+- [ ] 打开第三个页面后，已有双人会话保持稳定，第三页收到 `rejected(room-full)`。
 - [ ] 两端 `/api/turn-credentials` 都返回成功。
 - [ ] 两端分别用 Trickle ICE 得到 relay candidate。
 - [ ] UDP、TCP、TLS 443 分开测过并记录结果。

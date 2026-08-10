@@ -10,48 +10,54 @@ WebRTC 定义了浏览器之间的连接能力，但不规定应用如何交换 
 
 ```mermaid
 sequenceDiagram
-  participant G as "访客浏览器"
+  participant A as "浏览器 A"
   participant S as "Supabase Realtime"
-  participant H as "房主浏览器"
+  participant B as "浏览器 B"
 
-  G->>S: "hello(senderId)"
-  S->>H: "转发 hello"
-  H->>H: "锁定首个访客并创建 DataChannel"
-  H->>H: "createOffer + setLocalDescription"
-  H->>S: "offer + negotiationId"
-  S->>G: "转发 offer"
-  G->>G: "setRemoteDescription + createAnswer"
-  G->>S: "answer + negotiationId"
-  S->>H: "转发 answer"
-  H->>H: "setRemoteDescription"
-  H-->>S: "ICE candidates"
-  G-->>S: "ICE candidates"
-  S-->>H: "对端 candidates"
-  S-->>G: "对端 candidates"
-  H<<->>G: "RTCDataChannel open"
+  A->>S: "hello(protocol=2, participantId, epoch)"
+  B->>S: "hello(protocol=2, participantId, epoch)"
+  S-->>A: "转发 B 的 hello"
+  S-->>B: "转发 A 的 hello"
+  A->>A: "锁定 B，并比较 participantId"
+  B->>B: "锁定 A，并得到同一选举结果"
+  Note over A,B: "字符串较小的 ID 是本轮临时 Offer 发起方"
+  A->>A: "创建 DataChannel + createOffer"
+  A->>S: "offer(epoch pair, negotiationId)"
+  S->>B: "转发 offer"
+  B->>B: "setRemoteDescription + createAnswer"
+  B->>S: "answer(epoch pair, negotiationId)"
+  S->>A: "转发 answer"
+  A->>A: "setRemoteDescription"
+  A-->>S: "ICE candidates + negotiationId"
+  B-->>S: "ICE candidates + negotiationId"
+  S-->>A: "对端 candidates"
+  S-->>B: "对端 candidates"
+  A<<->>B: "RTCDataChannel open；此后双方完全对等"
 ```
+
+图中 A 只是恰好拥有字典序更小的随机 `participantId`；下次打开页面，临时 Offer 发起方可能变成 B。这不是用户身份或权限角色。
 
 实现中有几项可靠性保护：
 
-- 每次协商生成 `negotiationId`，忽略过期 Answer；
+- 所有信令显式标记 `protocol: 2`，旧格式不会混入 v2 状态机；
+- 双方都发送 Hello，并用 `participantId` 字符串顺序确定唯一临时 Offer 发起方，避免双方同时 Offer；
+- 每次协商生成 `negotiationId`，并携带发送端 `fromEpoch` 与目标 `toEpoch`，过期 Answer 会被忽略；
 - 所有信令进入 Promise 队列串行处理，避免并发修改 `signalingState`；
 - 重复 Offer 会复用已经生成的 Answer，而不是重复设置远端描述；
-- 远端描述尚未设置时先缓存 ICE Candidate，设置后统一补入；
-- 收到 Offer 后访客停止周期 `hello`，避免重复触发协商；
-- 新会话会清空旧访客锁和协商状态，旧 Peer/DataChannel 回调不能覆盖新状态。
-- DataChannel 或 PeerConnection 中断后，双方会延迟 800 ms 自动重握手；访客恢复 `hello`，房主为同一个访客生成新的 Offer。
-- 每轮重连都有新的 `negotiationId`，ICE Candidate 也携带该 ID，旧协商产生的 Candidate 会被忽略。
-- 用户可点击“立即重连”跳过等待；同一标签页刷新后通过 `sessionStorage` 复用本次发送方身份。
+- 远端描述尚未设置时，ICE Candidate 按 `peerId + local/remote epoch + negotiationId` 分桶缓存，命中当前协商后才统一补入；
+- 新会话会清空旧 peer lock 和协商状态，旧 Peer/DataChannel 回调不能覆盖新状态；
+- PeerConnection 进入 `disconnected` 后先观察 2.5 秒，避免把瞬时抖动误判为断线；进入 `failed` 或 DataChannel 关闭时通常在 800 ms 后自动重握手。新一轮会递增 local epoch、双方重新 Hello，并重新选出临时 Offer 发起方；
+- 用户可点击“立即重连”跳过等待。每次页面加载使用新的随机 participant ID，epoch 用来区分同一页面内的重连轮次。
 
 ## 3. 双工 DataChannel
 
-房主在 `RTCPeerConnection` 上创建：
+选举出的临时 Offer 发起方在 `RTCPeerConnection` 上创建：
 
 ```ts
 peer.createDataChannel("twoonly-messages", { ordered: true })
 ```
 
-访客通过 `peer.ondatachannel` 取得同一逻辑通道。通道打开后，双方都能调用 `send()`，也都监听 `message`，因此它是一个全双工通道，而不是“请求—响应”接口。
+另一端通过 `peer.ondatachannel` 取得同一逻辑通道。通道打开后，Offer 发起方这一临时差异立即失去产品含义：双方都能调用 `send()`，也都监听 `message`，因此它是一个全双工通道，而不是“请求—响应”接口。
 
 `ordered: true` 且未设置 `maxRetransmits` / `maxPacketLifeTime`，对应可靠、按序传输。WebRTC 规范将 `RTCDataChannel` 定义为双向数据通道，底层使用 SCTP 数据传输；参见 [W3C WebRTC Peer-to-peer Data API](https://www.w3.org/TR/webrtc/#peer-to-peer-data-api) 和 [WebRTC Data Channels](https://webrtc.org/getting-started/data-channels)。
 
@@ -111,7 +117,7 @@ type ChatMessage = {
   id: string;
   kind: "text" | "image" | "audio";
   content: string;
-  author: "host" | "guest";
+  author: "self" | "peer";
   createdAt: number;
   fileName?: string;
 };
@@ -123,6 +129,8 @@ type ChatMessage = {
 - 图片和语音在编码前限制为 1.5 MB，避免浏览器内存、本地存储和 DataChannel 队列失控。
 
 消息 JSON 先整体加密，再把密文 JSON 按 12,000 字符切成 `ChunkPacket`。接收端按消息 ID 和序号重组，只有分片完整后才执行 AES-GCM 解密。
+
+`self / peer` 是当前标签页的 UI 方向，不是网络协议角色。发送消息时，标签页把消息 ID 记入 `sessionStorage` 的 `twoonly:<roomId>:sent-message-ids:v2`；刷新并解密本地历史时，以该列表恢复“我/对方”。旧链接中的 `role=host/guest` 只用于兼容 v1 密文里的旧 author 值，新消息不再写入角色。
 
 当前未实现发送背压；持续发送多个大文件可能增大 `RTCDataChannel.bufferedAmount`。正式版应设置 `bufferedAmountLowThreshold` 并等待 `bufferedamountlow`。
 
@@ -157,6 +165,7 @@ twoonly:<roomId>:messages
 - 没有账号、设备公钥、数字签名或长期身份认证；
 - 拿到完整邀请链接的人同时拿到房间号和加密秘密；
 - 公共 Supabase topic 可被知道 roomId 的客户端订阅或干扰；
-- 房主刷新会重置“两人锁”；
+- `participantId` 和 epoch 只做结构与轮次校验，没有验签；恶意订阅者可以冒充已有 peer 干扰建连或可用性，但仍不能因此解密没有拿到密钥的聊天正文；
+- 双人限制只是双方页面内存里的 peer lock；页面全部关闭后没有服务端持久席位，失效连接也允许新页面实例接替；
 - 不提供前向保密的应用层密钥轮换，也不提供消息删除同步；
 - SDP/ICE 等网络元数据需要经过 Supabase，TURN 中继也能观察连接元数据和流量体积，但不能读取 AES-GCM 正文。

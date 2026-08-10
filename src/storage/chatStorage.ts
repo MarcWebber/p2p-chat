@@ -1,4 +1,4 @@
-import type { EncryptedWire, Role } from "@/src/chat/types";
+import type { EncryptedWire } from "@/src/chat/types";
 
 const MAX_STORED_MESSAGES = 200;
 
@@ -27,19 +27,28 @@ export function clearEncryptedHistory(roomId: string) {
   if (roomId) localStorage.removeItem(getMessageStorageKey(roomId));
 }
 
-function getSenderStorageKey(roomId: string, role: Role) {
-  return `twoonly:${roomId}:${role}:sender`;
+function getSentMessageStorageKey(roomId: string) {
+  return `twoonly:${roomId}:sent-message-ids:v2`;
 }
 
-export function getOrCreateSenderId(roomId: string, role: Role, createId: () => string) {
-  const storageKey = getSenderStorageKey(roomId, role);
-  const existing = sessionStorage.getItem(storageKey);
-  if (existing) return existing;
-  const senderId = createId();
-  sessionStorage.setItem(storageKey, senderId);
-  return senderId;
+function loadSentMessageIds(roomId: string) {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(getSentMessageStorageKey(roomId)) ?? "[]") as unknown;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
-export function saveSenderId(roomId: string, role: Role, senderId: string) {
-  sessionStorage.setItem(getSenderStorageKey(roomId, role), senderId);
+export function markMessageAsSent(roomId: string, messageId: string) {
+  const existing = loadSentMessageIds(roomId);
+  if (existing.includes(messageId)) return;
+  sessionStorage.setItem(
+    getSentMessageStorageKey(roomId),
+    JSON.stringify([...existing, messageId].slice(-MAX_STORED_MESSAGES)),
+  );
+}
+
+export function wasMessageSentByThisTab(roomId: string, messageId: string) {
+  return loadSentMessageIds(roomId).includes(messageId);
 }

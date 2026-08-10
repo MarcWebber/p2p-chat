@@ -10,7 +10,7 @@
 
 | 能力 | 最终状态 |
 | --- | --- |
-| 双人房间 | 房主锁定首位访客，第三人被拒绝 |
+| 双人房间 | v2 无固定角色，双方互锁另一位参与者并拒绝第三页 |
 | 文字 / 图片 / 语音 | 已实现，媒体单条上限 1.5 MB |
 | 实时链路 | WebRTC DataChannel |
 | 信令 | Supabase Realtime Broadcast |
@@ -32,6 +32,7 @@ timeline
   可跨网 : 接入 Supabase Realtime 信令
   可兜底 : 接入 Cloudflare TURN 短时凭证
   可部署 : 持久化 Vercel Production 环境变量并完成线上验收
+  更对等 : protocol v2、双方 Hello、确定性 Offer 选举与 epoch 隔离
 ```
 
 ### 第一阶段：能连上，不等于架构成立
@@ -75,11 +76,11 @@ flowchart TD
 
 这次经验很直接：**本地双标签页不是跨网络 E2E。**以后验收必须明确区分本地静态检查、浏览器双标签页、不同设备、不同网络和生产环境。
 
-### 2. 信令恢复了，双方却不会重新握手
+### 2. 信令恢复了，双方却不会重新握手（v1 固定角色协议）
 
 WebSocket 自动重连只会恢复“联系渠道”，不会自动重建已经失败的 PeerConnection。最初缺少一套完整的重协商协议，导致断开后双方都在等对方先动。
 
-最终修复包含：
+当时 v1 仍采用固定房主/访客角色，最终修复包含：
 
 - 访客恢复周期性 `hello`；
 - 房主针对同一 senderId 重新生成 Offer；
@@ -120,11 +121,27 @@ Route Handler 最初用请求 URL 的内部 Origin 和浏览器 `Origin` 直接�
 
 随后强制生产部署，线上首页和 TURN 接口均为 200。旧部署的 503 仍会出现在一小时日志窗口里，所以排查日志时必须按 deployment ID 区分，而不能只看项目级时间范围。
 
-### 6. Guest 显示已连接，Host 却卡在自动重连
+### 6. Guest 显示已连接，Host 却卡在自动重连（v1 历史故障）
 
 这不是 TURN “只连通了一边”，而是客户端把一次瞬时 `RTCPeerConnection.disconnected` 立即写进 UI；连接在重连定时器触发前恢复后，定时器因为 DataChannel 仍为 `open` 而直接返回，却没有把 Host 状态恢复为 `connected`。
 
 修复后，瞬时断开先进入 2.5 秒波动确认期；PeerConnection 或 DataChannel 恢复时统一清理重连定时器并重新标记连接成功，持续断开才创建新一轮协商。同时，TURN 状态改为读取实际选中的 Candidate Pair，而不是只要候选池中出现过 relay 就显示正在中继。
+
+### 7. 固定角色让同一条链接变得不对等
+
+v1 的创建页地址带 `role=host`，复制按钮生成 `role=guest`。这套模型能快速完成 Offer/Answer，但也埋下了两个产品级陷阱：用户直接复制地址栏时，两个页面会同时成为 Host，没人发送 Hello；两个页面都打开 Guest 链接时，又没人创建 Offer。协议正确性依赖用户拿到“正确角色”的 URL，不够稳健。
+
+v2 把这层角色彻底拿掉：
+
+- 新链接统一为 `?room=<id>#<secret>`；旧 role 链接仍可解析，但参数只帮助迁移旧消息方向；
+- 每次页面加载生成随机 `participantId`，双方订阅成功后都广播 protocol v2 Hello；
+- 两端比较 participant ID 字符串，较小者只是本轮临时 Offer/DataChannel 发起方；通道打开后双方完全对等；
+- local/remote epoch 区分重连轮次，`negotiationId` 区分具体协商；Answer 和 Candidate 必须同时匹配这些字段；
+- 早到的 Candidate 按参与者、epoch 和 negotiation ID 分桶，远端描述就绪后只冲刷当前桶；
+- 两端都持有运行时 peer lock，已有会话会拒绝第三页，但这仍不是服务端身份或持久席位；
+- 消息 UI 改用 `self / peer`。每个标签页在 `sessionStorage` 记录自己发送过的消息 ID，用于刷新后恢复“我/对方”；旧 `host / guest` author 继续兼容读取。
+
+这个改动带来的最大收益不是少了一个 URL 参数，而是让“谁先发 Offer”从长期身份降级为一次协商里的确定性临时职责。排障时也不再问“哪边是 Host”，而是看两端 Hello、`peer.elected`、epoch 和 negotiation ID 是否一致。
 
 ## 最终验收是怎么做的
 
@@ -141,7 +158,7 @@ flowchart LR
 
 - TypeScript 检查通过；
 - Next.js 生产构建通过；
-- 本地房主和访客强制使用 TURN，双方显示中继模式；
+- 本地参与者 A、B 强制使用 TURN，双方显示中继模式；
 - 加密测试消息成功到达对端；
 - 生产首页 HTTP 200；
 - 生产凭证接口 HTTP 200；
@@ -168,7 +185,7 @@ flowchart LR
 - 没有账号、设备公钥和签名身份；
 - 完整邀请链接等同于加入能力和解密能力；
 - 公共 Supabase topic 不是访问控制；
-- 房主刷新会丢失运行时双人锁；
+- 双人限制只是两端页面内存中的 peer lock，页面全部关闭后没有服务端持久席位；
 - 没有前向保密的应用层密钥轮换；
 - 没有离线投递、跨设备历史或删除同步；
 - TURN、Supabase 和网络运营者仍能观察 IP、连接时间和流量大小等元数据。
