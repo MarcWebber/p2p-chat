@@ -177,6 +177,8 @@ turns:turn.example.com:443?transport=tcp
 
 ## 6. 验证
 
+这里要区分三件事：凭证接口成功、收集到 relay candidate、实际选中 TURN 并产生双向流量。它们不是同一条证据。完整的分层判断和两端检查步骤见[常见问题与网络排障 FAQ](faq.md)。
+
 ### 6.1 先验证 TURN 服务
 
 打开 WebRTC 官方示例 [Trickle ICE](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/)：
@@ -194,8 +196,9 @@ turns:turn.example.com:443?transport=tcp
 1. 重新部署后用两种不同网络打开房主和访客，例如家庭宽带与手机热点；
 2. 建立聊天并发送双向消息；
 3. 切换网络或短暂断网，确认页面自动显示“正在重新建立加密连接”并恢复；
-4. 在必须走中继的网络下，聊天页顶部应显示“TURN 加密中继”；
-5. 同时检查 Coturn 日志是否出现 allocation 和 relay 流量。
+4. 在必须走中继的网络下，聊天页顶部应显示“TURN 加密中继”；该状态读取的是实际选中的 Candidate Pair，而不是候选池里是否曾经出现 relay；
+5. 双向发送消息并在 WebRTC 内部统计中确认 `bytesSent`、`bytesReceived` 持续增长；
+6. 同时检查 Coturn 日志或 Cloudflare TURN Analytics 是否出现 allocation、连接数和双向 relay 流量。
 
 ## 7. 常见问题
 

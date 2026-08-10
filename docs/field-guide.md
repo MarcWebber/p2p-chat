@@ -262,10 +262,11 @@ stateDiagram-v2
 
 ## 怎么判断连接到底走了哪里
 
-只看到 DataChannel `open` 还不够。项目会调用 `RTCPeerConnection.getStats()`，检查本地候选里是否出现 `relay`：
+只看到 DataChannel `open` 还不够。项目会调用 `RTCPeerConnection.getStats()`，找到 transport 实际选中的 Candidate Pair，再检查这条路径是否包含 `relay`：
 
-- 出现 `relay`：UI 显示“TURN 加密中继”；
-- 没出现：显示“WebRTC 点对点直连”。
+- 选中的路径包含 `relay`：UI 显示“TURN 加密中继”；
+- 选中的是非 relay 路径：显示“WebRTC 点对点直连”；
+- 浏览器暂时没有暴露可判定的选中候选对：显示“WebRTC 已连接”。
 
 更深入排查时，可以结合浏览器的 `chrome://webrtc-internals`：
 
@@ -292,4 +293,3 @@ stateDiagram-v2
 - [RFC 8445：ICE](https://www.rfc-editor.org/info/rfc8445/)
 - [RFC 8489：STUN](https://www.rfc-editor.org/info/rfc8489/)
 - [RFC 8656：TURN](https://www.rfc-editor.org/info/rfc8656/)
-

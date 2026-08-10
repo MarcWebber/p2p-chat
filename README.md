@@ -11,6 +11,7 @@
 - [系统架构与文件结构](docs/architecture.md)
 - [WebRTC、双工通道与加密](docs/webrtc-security.md)
 - [TURN 配置手册](docs/turn-configuration.md)
+- [常见问题与网络排障 FAQ](docs/faq.md)
 - [Supabase、Vercel 与部署运维](docs/deployment-operations.md)
 
 ## 已实现

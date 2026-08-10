@@ -145,7 +145,7 @@ NEXT_PUBLIC_TURN_USERNAME=<短时用户名>
 NEXT_PUBLIC_TURN_CREDENTIAL=<短时凭证>
 ```
 
-验收时应覆盖：不同运营商、家庭宽带与蜂窝网络、公司网络、UDP 禁用场景。连接后页面显示“TURN 加密中继”只能证明浏览器统计里出现 relay candidate；还应在 TURN 服务端监控分配成功率、地域、带宽和错误码。
+验收时应覆盖：不同运营商、家庭宽带与蜂窝网络、公司网络、UDP 禁用场景。连接后页面显示“TURN 加密中继”表示浏览器统计中的实际选中 Candidate Pair 含 relay；还应双向发送数据并在 TURN 服务端监控连接数、地域和流量。完整证据链见[常见问题与网络排障 FAQ](faq.md)。
 
 ## 7. 中国大陆稳定访问
 

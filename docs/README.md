@@ -9,8 +9,9 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 1. [从一条邀请链接到一条加密 P2P 通道](field-guide.md)：用 TwoOnly 串起信令、ICE、STUN、TURN、DataChannel、AES-GCM、本地历史和重连。
 2. [VPS、Socket.IO、Vercel 和 TURN](network-and-deployment.md)：解释常驻 Node 服务、托管信令、平台 Function 和中继服务分别适合放什么。
 3. [TwoOnly 项目复盘](project-retrospective.md)：记录模块化过程、真实故障、生产部署、验收证据和项目边界。
+4. [常见问题与网络排障 FAQ](faq.md)：回答“开了 TURN 为什么还失败”，并给出从凭证、relay candidate、选中路径到双向流量的完整证据链。
 
-这三篇偏经验分享，代码很少，流程图比较多。想直接查配置或实现细节，再进入下面的专题手册。
+这组文档偏经验分享，代码很少，流程图比较多。想直接查配置或实现细节，再进入下面的专题手册。
 
 ## 专题手册
 
@@ -18,6 +19,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 - [代码规模与复杂度基线](code-metrics.md)：当前行数、目录分布、复杂度代理和重复统计方法。
 - [WebRTC、双工通道与加密](webrtc-security.md)：Offer/Answer、ICE、STUN/TURN、DataChannel、AES-GCM、分片、威胁边界。
 - [TURN 配置手册](turn-configuration.md)：托管服务和 Coturn 自建方式、端口、证书、Vercel 环境变量与验收。
+- [常见问题与网络排障 FAQ](faq.md)：TURN 可达性、两端状态不一致、重连、国内网络和常见产品边界。
 - [Supabase、Vercel 与部署运维](deployment-operations.md)：环境变量、Supabase 配置、Vercel 部署、测试和国内访问方案。
 
 ## 一张图看懂
