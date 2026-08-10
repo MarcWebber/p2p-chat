@@ -2,7 +2,7 @@ import type { ConnectionState, EncryptedWire, Role } from "@/src/chat/types";
 import { randomToken } from "@/src/crypto/messageCrypto";
 import { encodeEncryptedWire, EncryptedWireAssembler } from "@/src/protocol/wireProtocol";
 import type { OutgoingSignal, SignalMessage } from "@/src/signal/types";
-import { ICE_CONFIGURATION } from "@/src/webrtc/iceConfig";
+import { HAS_TURN_CONFIGURATION, ICE_CONFIGURATION } from "@/src/webrtc/iceConfig";
 
 type SessionOptions = {
   role: Role;
@@ -15,6 +15,7 @@ type SessionOptions = {
 
 const RECONNECT_DELAY_MS = 800;
 const ANNOUNCE_INTERVAL_MS = 1_500;
+const SIGNAL_WARNING_DELAY_MS = 3_500;
 
 export class WebRtcSession {
   private readonly role: Role;
@@ -36,6 +37,8 @@ export class WebRtcSession {
   private offerCreating = false;
   private reconnectTimer: number | undefined;
   private announceTimer: number | undefined;
+  private signalWarningTimer: number | undefined;
+  private signalWarningVisible = false;
   private signalQueue = Promise.resolve();
   private disposed = false;
 
@@ -57,7 +60,14 @@ export class WebRtcSession {
   }
 
   onSignalReady() {
-    if (this.role !== "guest" || this.disposed) return;
+    if (this.disposed) return;
+    if (this.signalWarningTimer !== undefined) window.clearTimeout(this.signalWarningTimer);
+    this.signalWarningTimer = undefined;
+    if (this.signalWarningVisible) {
+      this.signalWarningVisible = false;
+      this.onNotice("信令服务已恢复，正在重新握手。");
+    }
+    if (this.role !== "guest") return;
     this.announceEnabled = true;
     this.announce();
     if (this.announceTimer === undefined) {
@@ -66,8 +76,16 @@ export class WebRtcSession {
   }
 
   onSignalUnavailable() {
-    this.onConnectionChange("disconnected", "信令服务暂时中断，等待恢复");
-    this.onNotice("信令服务正在自动重连，恢复后会重新握手。");
+    // Signaling is only needed to negotiate/re-negotiate. A healthy DataChannel keeps working
+    // during a temporary Realtime outage and must not be presented as disconnected.
+    if (this.disposed || this.dataChannel?.readyState === "open" || this.signalWarningTimer !== undefined) return;
+    this.signalWarningTimer = window.setTimeout(() => {
+      this.signalWarningTimer = undefined;
+      if (this.disposed || this.dataChannel?.readyState === "open") return;
+      this.signalWarningVisible = true;
+      this.onConnectionChange("disconnected", "信令服务暂时中断，等待恢复");
+      this.onNotice("信令服务正在自动重连，恢复后会重新握手。");
+    }, SIGNAL_WARNING_DELAY_MS);
   }
 
   handleSignal = (signal: SignalMessage) => {
@@ -78,6 +96,9 @@ export class WebRtcSession {
 
   reconnect(automatic = false) {
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
+    if (this.signalWarningTimer !== undefined) window.clearTimeout(this.signalWarningTimer);
+    this.signalWarningTimer = undefined;
+    this.signalWarningVisible = false;
 
     const reconnectNow = () => {
       this.reconnectTimer = undefined;
@@ -123,6 +144,8 @@ export class WebRtcSession {
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
     this.announceTimer = undefined;
     this.reconnectTimer = undefined;
+    this.signalWarningTimer = undefined;
+    this.signalWarningVisible = false;
     this.restartRequested = false;
     this.wireAssembler.clear();
     const peer = this.peer;
@@ -165,7 +188,18 @@ export class WebRtcSession {
     };
     peer.onconnectionstatechange = () => {
       if (this.peer !== peer) return;
-      if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
+      if (peer.connectionState === "failed") {
+        this.onConnectionChange(
+          "disconnected",
+          HAS_TURN_CONFIGURATION ? "连接失败，正在自动重连" : "直连失败（未配置 TURN）",
+        );
+        this.onNotice(
+          HAS_TURN_CONFIGURATION
+            ? "直连和 TURN 中继均未建立，正在重新握手。"
+            : "当前仅配置了 STUN；严格 NAT 或企业网络需要 TURN 中继。",
+        );
+        this.reconnect(true);
+      } else if (peer.connectionState === "disconnected") {
         this.onConnectionChange("disconnected", "连接已断开，正在自动重连");
         this.onNotice("连接中断，正在重新握手；也可以点击“立即重连”。");
         this.reconnect(true);

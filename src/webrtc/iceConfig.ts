@@ -5,6 +5,10 @@ const turnUrls = splitIceUrls(process.env.NEXT_PUBLIC_TURN_URLS, []);
 const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
 const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
 
+export const HAS_TURN_CONFIGURATION = Boolean(
+  turnUrls.length && turnUsername && turnCredential,
+);
+
 export const ICE_CONFIGURATION: RTCConfiguration = {
   iceServers: [
     {
@@ -13,7 +17,7 @@ export const ICE_CONFIGURATION: RTCConfiguration = {
         "stun:stun.l.google.com:19302",
       ]),
     },
-    ...(turnUrls.length && turnUsername && turnCredential
+    ...(HAS_TURN_CONFIGURATION && turnUsername && turnCredential
       ? [{ urls: turnUrls, username: turnUsername, credential: turnCredential }]
       : []),
   ],

@@ -29,6 +29,16 @@ WebRTC 官方同样建议为无法直接建立连接的场景提供 TURN，参�
 
 优先选择能覆盖主要用户地区、支持 TLS 443、提供短时凭证和连接成功率监控的服务。中国大陆用户较多时，应确认服务商对中国电信、联通、移动的实际可达性，不能只看机房地理位置。
 
+### 2.1 当前推荐的落地顺序
+
+本项目目前只配置了 STUN，生产环境没有 `NEXT_PUBLIC_TURN_*`。可以按投入从低到高选择：
+
+1. **立即验证**：用专属 Coturn 长期用户名/随机密码接入现有的三个 `NEXT_PUBLIC_TURN_*` 变量。代码无需再改，但凭证会进入浏览器包，只适合小规模试运行。
+2. **正式托管**：使用 Cloudflare Realtime TURN 等托管服务，并新增一个 Vercel 服务端接口生成短时凭证。TURN key 和 API token 必须只放在服务端，浏览器只接收临时 `iceServers`。
+3. **国内优先**：在目标用户附近自建 Coturn，使用 `use-auth-secret` 和短时 HMAC 凭证；至少覆盖 UDP 3478、TCP 3478 和 TLS 443，并按电信、联通、移动分别实测。
+
+Cloudflare 的官方接入文档是 [Generate Credentials](https://developers.cloudflare.com/realtime/turn/generate-credentials/)。其凭证生成接口适合由后端调用，不应把 TURN key 暴露给浏览器。Cloudflare Realtime TURN 的全球网络不包含中国网络，因此它适合快速验证和海外访问，不应被当作中国大陆稳定性的保证。
+
 ## 3. 方案 B：Ubuntu 自建 Coturn
 
 ### 3.1 准备资源
@@ -133,6 +143,8 @@ TwoOnly 当前从 `NEXT_PUBLIC_TURN_*` 读取 TURN 凭证，所以它们会进�
 - 不复用服务器登录密码或其他系统凭证。
 
 更正式的方案是 Coturn `use-auth-secret`/TURN REST API：可信后端用共享秘密签发带过期时间的临时用户名和 HMAC credential，浏览器只拿短时凭证。该方式需要为 TwoOnly 增加一个服务端凭证接口，当前纯静态版本尚未实现。
+
+托管 TURN 也遵循相同原则：例如 Cloudflare 要求后端保存 TURN key 和 API token，再为客户端生成有 TTL 的临时 `iceServers`。不要把服务商的长期 API token 写入任何 `NEXT_PUBLIC_*` 变量。
 
 ## 5. 写入 Vercel
 
