@@ -1,15 +1,15 @@
-# Supabase 不可达时的 Vercel HTTPS 信令降级
+# Supabase + Vercel HTTPS 双活信令
 
 TwoOnly 的聊天正文走 WebRTC DataChannel，但新的 PeerConnection 仍需要交换 Hello、Offer、Answer 和 ICE Candidate。TURN 只能中继已经完成协商的 WebRTC 流量，不能替代信令。因此，某一端无法访问 Supabase Realtime 时，仅仅显示“TURN 凭据正常”仍不足以完成建联。
 
-当前实现保留 Supabase 作为低延迟主信令，同时增加同源 `/api/signal` HTTPS 降级信令。只要用户能打开 Vercel 页面并访问 TURN 凭据接口，通常也能访问同一域名下的降级端点。
+当前实现同时启用低延迟的 Supabase WebSocket 与同源 `/api/signal` HTTPS 信令。只要用户能打开 Vercel 页面，通常也能访问同一域名下的 HTTPS 信令端点。
 
 ## 1. 当前结论
 
 | 项目 | 当前实现 |
 | --- | --- |
-| 主信令 | Supabase Realtime Broadcast |
-| 降级信令 | Vercel Route Handler `/api/signal` |
+| WebSocket 路径 | Supabase Realtime Broadcast |
+| 同源 HTTPS 路径 | Vercel Route Handler `/api/signal` |
 | 共享短时队列 | Upstash Redis Stream，由 Vercel 服务端访问 |
 | 客户端策略 | 两条信令同时发送、同时接收，任意一条可用即可握手 |
 | 重复处理 | 每次发送生成 `signalId`，进入 WebRTC 状态机前去重 |
@@ -112,7 +112,6 @@ curl https://twoonly-chat.vercel.app/api/signal
 | `signal.route.dual` | 两条信令均可用 |
 | `signal.route.degraded` | 至少一条可用，可以继续握手 |
 | `signal.route.unavailable` | 两条信令均不可用 |
-| `signal.message.duplicate` | 同一 `signalId` 从另一通道重复到达，已忽略 |
 | `hello.received` | 已经通过某一信令通道发现对方 |
 
 日志只记录 provider、事件类型、耗时和短 ID，不记录完整房间、SDP、Candidate、密钥或 Redis Token。
@@ -130,15 +129,15 @@ curl https://twoonly-chat.vercel.app/api/signal
 | 同一信令从两条通道到达 | 只进入 `WebRtcSession` 一次 |
 | 第三个页面加入 | 现有 peer lock 仍拒绝第三个参与者 |
 
-最关键的降级验收方式是在两端浏览器阻断 Supabase 域名，但保留 TwoOnly Vercel 域名，然后重新进入同一房间。双方应出现 `signal.route.degraded`、`hello.received`、Offer/Answer、ICE 和 `data.open`。
+最关键的单通道验收方式是在两端浏览器阻断 Supabase 域名，但保留 TwoOnly Vercel 域名，然后重新进入同一房间。双方应出现 `signal.route.degraded`、`hello.received`、Offer/Answer、ICE 和 `data.open`。
 
 ## 8. 能保证什么，不能保证什么
 
-这套方案解决的是“用户能访问 TwoOnly，但无法直接访问 Supabase”这一类故障。因为浏览器到 Vercel 的链路已经由页面和 TURN 凭据接口验证，降级信令不再要求它额外访问 Cloudflare Worker 域名。
+这套方案解决的是“用户能访问 TwoOnly，但无法直接访问 Supabase”这一类故障。因为浏览器到 Vercel 的链路已经由页面和 TURN 凭据接口验证，HTTPS 信令不再要求它额外访问 Cloudflare Worker 域名。
 
 它仍然不能保证所有网络 100% 成功：
 
-- Vercel 本身不可达时，页面和同源降级都会失效；
+- Vercel 本身不可达时，页面和同源 HTTPS 信令都会失效；
 - Vercel 到 Upstash 的服务端链路仍可能故障；
 - TURN 凭据成功不等于已经取得 relay candidate；
 - 信令完成后，最终 WebRTC 直连或 TURN 路径仍必须可达。

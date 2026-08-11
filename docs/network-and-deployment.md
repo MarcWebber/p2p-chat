@@ -89,18 +89,20 @@ VPS + Socket.IO Room
 
 也就是说，Socket.IO 是“介绍人”，不是“打洞器”。当然，你也可以放弃 P2P，让所有聊天都经 Socket.IO Server 转发，但那已经是另一种客户端—服务器架构。
 
-## 为什么当前项目选 Supabase 做信令
+## 为什么当前项目同时使用 Supabase 与 HTTPS 信令
 
-Supabase Realtime Broadcast 通过 WebSocket 在客户端之间转发低延迟事件；客户端订阅完成后再发送，消息走已建立的 WebSocket。`ack: true` 可以确认 Realtime 服务已经收到广播。官方说明见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast)。
+Supabase Realtime Broadcast 通过 WebSocket 转发低延迟事件；同源 `/api/signal` 则通过短轮询读取 Upstash Redis Stream。双方从页面加载起同时发送到两条路径，并用 `signalId` 去重，因此任何一条共同可达就能继续握手。Supabase 官方说明见 [Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast)。
 
 ```mermaid
 flowchart LR
-  A["Browser A"] <-->|"WebSocket: signal event"| S["Supabase Realtime"]
-  S <-->|"WebSocket: signal event"| B["Browser B"]
+  A["Browser A"] <-->|"WebSocket"| S["Supabase Realtime"]
+  S <-->|"WebSocket"| B["Browser B"]
+  A <-->|"HTTPS poll / publish"| H["Vercel + Upstash"]
+  H <-->|"HTTPS poll / publish"| B
   A <==>|"WebRTC 密文"| B
 ```
 
-它让 MVP 不必维护 VPS、证书和 Socket.IO 进程。代价是：
+这组组合让 MVP 不必维护 VPS、证书和常驻 Socket.IO 进程，同时避免把跨设备建联押在单一域名上。代价是：
 
 - 公共 topic 不是严格授权；
 - 服务区域和跨境网络会影响信令；
@@ -165,7 +167,7 @@ flowchart LR
   ICE --> DATA["P2P 或中继数据"]
 ```
 
-TURN 只改善最后两段的穿透，解决不了 `vercel.app`、DNS 或跨境链路本身不可达。当前同源 HTTPS 降级可以绕过客户端到 Supabase WebSocket 的故障，但不能绕过 Vercel 自身不可达。
+TURN 只改善最后两段的穿透，解决不了 `vercel.app`、DNS 或跨境链路本身不可达。当前同源 HTTPS 信令可以绕过客户端到 Supabase WebSocket 的故障，但不能绕过 Vercel 自身不可达。
 
 如果国内稳定性是正式目标，更现实的路径是：
 

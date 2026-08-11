@@ -12,7 +12,7 @@
 - [WebRTC、双工通道与加密](docs/webrtc-security.md)
 - [TURN 配置手册](docs/turn-configuration.md)
 - [常见问题与网络排障 FAQ](docs/faq.md)
-- [Supabase 不可达时的信令容灾方案](docs/signaling-resilience.md)
+- [Supabase + Vercel HTTPS 双活信令](docs/signaling-resilience.md)
 - [Supabase、Vercel 与部署运维](docs/deployment-operations.md)
 
 ## 已实现
@@ -38,7 +38,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-配置 Supabase 后打开首页创建房间，再从第二个浏览器或设备打开邀请链接。
+至少配置 Supabase 或 Upstash HTTPS 信令中的一条；生产环境建议两条都配置。然后打开首页创建房间，再从第二个浏览器或设备打开邀请链接。
 
 ## 配置信令服务
 
@@ -49,7 +49,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 ```
 
-Supabase 只用于主路径交换 SDP 和 ICE 信令，聊天内容不经过 Supabase；同一信令还会以密文进入 Vercel HTTPS 临时队列。当前生产项目已经配置 Cloudflare TURN 短时凭证，直连失败时可切换到加密中继；自建部署仍应单独配置 TURN。
+Supabase Realtime 和同源 Vercel HTTPS 都只交换 SDP/ICE 等建连信令，聊天正文不经过它们。Supabase 路径使用 WebSocket；HTTPS 路径先在浏览器加密信令，再暂存到 Redis Stream。当前生产项目已经配置 Cloudflare TURN 短时凭证；自建部署仍应单独配置 TURN。
 
 如需在客户端无法访问 Supabase 时继续握手，在 Vercel Marketplace 给项目连接一个 Upstash Redis。Marketplace 通常自动注入：
 
@@ -64,7 +64,7 @@ KV_REST_API_TOKEN=xxx
 
 ## 部署到 Vercel
 
-把 Vercel 项目的 Root Directory 指向 `twoonly`，添加上面的两个 Supabase 环境变量，并设置：
+把 Vercel 项目的 Root Directory 指向 `twoonly`，连接 Upstash Marketplace、添加 Supabase 环境变量，并设置：
 
 ```dotenv
 NEXT_PUBLIC_SITE_URL=https://your-domain.example

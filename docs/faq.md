@@ -1,13 +1,13 @@
 # TwoOnly 常见问题与网络排障 FAQ
 
-这份 FAQ 按故障类型组织，不按问题出现的时间堆笔记。排障目标只有一个：确认连接停在网页、TURN 凭据、Supabase 信令、ICE 选路还是 DataChannel，并让两端拿出能互相印证的日志。
+这份 FAQ 按故障类型组织，不按问题出现的时间堆笔记。排障目标只有一个：确认连接停在网页、TURN 凭据、双活信令、ICE 选路还是 DataChannel，并让两端拿出能互相印证的日志。
 
 ## 0. 先看总流程
 
 | 问题类型 | 典型症状 | 对应章节 |
 | --- | --- | --- |
 | 页面与凭据 | 页面打不开、凭据超时、接口 502/503 | [1. 页面与 TURN 凭据](#1-页面与-turn-凭据) |
-| 主备信令 | `websocket connection failed`、`signal.route.degraded/unavailable` | [2. 主备信令](#2-主备信令) |
+| 双活信令 | `websocket connection failed`、`signal.route.degraded/unavailable` | [2. 双活信令](#2-双活信令) |
 | ICE 与 TURN | 没有 relay、`ice.failed`、无法确认是否走中继 | [3. ICE 与 TURN](#3-ice-与-turn) |
 | 连接生命周期 | 两端状态不一致、反复自动重连、换网失败 | [4. 连接生命周期与网络差异](#4-连接生命周期与网络差异) |
 | 产品与安全边界 | 历史不同步、旧角色链接、第三人进入 | [5. 产品与安全边界](#5-产品与安全边界) |
@@ -53,11 +53,11 @@
 
 Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服务端日志格式是 `[twoonly:turn][requestId] ...`，可用它把浏览器请求和 Function 日志对应起来。
 
-## 2. 主备信令
+## 2. 双活信令
 
 ![图 2：双方对等建连的正常时序](assets/faq-02-peer-connection-sequence.png)
 
-图 2 中的参与者 A、B 完全对等。双方都发送 Hello；`participantId` 只用于选出本轮临时 Offer 发起方，不是长期身份，也不是权限角色。图中 Supabase 表示主路径；当前实现还会把同一信令加密后写入 Vercel HTTPS 临时队列，聊天正文不会进入两条信令。
+图 2 中的参与者 A、B 完全对等。双方都发送 Hello；`participantId` 只用于选出本轮临时 Offer 发起方，不是长期身份，也不是权限角色。Supabase 与 Vercel HTTPS 从页面加载起同时工作，聊天正文不会进入两条信令。
 
 ### 2.1 任意一方无法访问 Supabase，会发生什么？
 
@@ -67,13 +67,13 @@ Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服�
 
 项目仍不提供 `BroadcastChannel` 本地 fallback。缺少 Supabase 配置时记录 `signal.supabase.config.missing` 并尝试 HTTPS；缺少 Upstash 配置时 `/api/signal` 返回 503 并继续尝试 Supabase。只有两条都不可用才出现 `signal.route.unavailable`。
 
-这里不是单边故障后切换。双方始终双发双收，再按唯一 `signalId` 去重，避免一端留在 Supabase、另一端切到 HTTPS 的“信令分裂”。完整实现见 [Vercel HTTPS 信令降级](signaling-resilience.md)。
+这里不是单边故障后切换。双方始终双发双收，再按唯一 `signalId` 去重，避免一端留在 Supabase、另一端切到 HTTPS 的“信令分裂”。完整实现见 [Supabase + Vercel HTTPS 双活信令](signaling-resilience.md)。
 
 ### 2.2 `websocket connection failed` 与 `transport failure` 是 TURN 报错吗？
 
 通常不是。Supabase Realtime SDK 会把部分底层 WebSocket 故障归一化为 `transport failure`。如果两条错误前后紧邻，它们一般描述同一次 Supabase 信令 WebSocket 失败。
 
-典型证据是已经出现 `credentials.success` 和 `signal.supabase.subscribe.start`，随后出现 `signal.supabase.transport.error`。如果同时出现 `signal.route.degraded` 和 HTTPS provider 的 `hello.received`，降级已经生效；如果最终是 `signal.route.unavailable`，再检查 `/api/signal` 状态和 Redis 配置。
+典型证据是已经出现 `credentials.success` 和 `signal.supabase.subscribe.start`，随后出现 `signal.supabase.transport.error`。如果同时出现 `signal.route.degraded` 和 HTTPS provider 的 `hello.received`，说明 HTTPS 单通道仍在工作；如果最终是 `signal.route.unavailable`，再检查 `/api/signal` 状态和 Redis 配置。
 
 ### 2.3 正常建连应看到哪些关键事件？
 
@@ -81,7 +81,7 @@ Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服�
 | --- | --- | --- |
 | 凭据 | `credentials.success`、`credentials.ready` | ICE 配置解析完成 |
 | 信令 | `signal.supabase.ready` 或 `signal.route.degraded`；理想为 `signal.route.dual` | 至少一条共同信令可用 |
-| 对端发现 | `hello.sent`、`hello.ack`、`hello.received` | 双方能够通过信令互相发现 |
+| 对端发现 | `hello.sent`、任一 provider 的 `signal.*.send.ack`、`hello.received` | 双方能够通过信令互相发现 |
 | 临时选举 | `peer.elected` | 双方锁定同一个 peer 并确定本轮 Offer 发起方 |
 | SDP | `sdp.offer.*`、`sdp.answer.*` | Offer/Answer 已交换并应用 |
 | ICE | `ice.candidate.*`、`ice.connected` 或 `ice.completed` | 已选出可用网络路径 |
@@ -260,7 +260,7 @@ URL fragment 中包含会话秘密。fragment 通常不会随 HTTP 请求发送�
 - [TURN 配置手册](turn-configuration.md)
 - [WebRTC、双工通道与加密](webrtc-security.md)
 - [Supabase、Vercel 与部署运维](deployment-operations.md)
-- [Supabase 不可达时的信令容灾方案](signaling-resilience.md)
+- [Supabase + Vercel HTTPS 双活信令](signaling-resilience.md)
 - [TwoOnly 项目复盘](project-retrospective.md)
 - [Cloudflare TURN 短时凭据](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
 - [Cloudflare TURN Analytics](https://developers.cloudflare.com/realtime/turn/analytics/)

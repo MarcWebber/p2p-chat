@@ -45,7 +45,7 @@ flowchart LR
   BP -. "候选地址发现 / 必要时中继" .-> ICE
 ```
 
-Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时 TURN 配置，并通过 `/api/signal` 提供同源 HTTPS 降级信令。Supabase 与 HTTPS 在 WebRTC 建连阶段双活；HTTPS payload 先由浏览器用邀请密钥加密，Redis 最多保留约 128 条并在 180 秒后过期。连接成功后，应用消息走 DataChannel，聊天正文不会写入 Supabase、Redis 或 Vercel Function。
+Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时 TURN 配置，并通过 `/api/signal` 提供同源 HTTPS 信令。Supabase 与 HTTPS 在 WebRTC 建连阶段双活；HTTPS payload 先由浏览器用邀请密钥加密，Redis 最多保留约 128 条并在 180 秒后过期。连接成功后，应用消息走 DataChannel，聊天正文不会写入 Supabase、Redis 或 Vercel Function。
 
 ## 2. 运行时组件
 
@@ -151,7 +151,7 @@ https://站点/?room=<roomId>#<secret>
 twoonly/
 ├── app/
 │   ├── api/signal/
-│   │   └── route.ts                # 同源 HTTPS 降级信令入口
+│   │   └── route.ts                # 同源 HTTPS 信令入口
 │   ├── api/turn-credentials/
 │   │   └── route.ts                # Cloudflare TURN 短时凭据与请求追踪
 │   ├── globals.css                 # 全局与响应式 UI
@@ -163,7 +163,7 @@ twoonly/
 │   ├── config/
 │   │   ├── policy.ts              # 产品限制、协议与 RTC 策略
 │   │   ├── publicRuntime.ts       # NEXT_PUBLIC 环境配置
-│   │   └── serverRuntime.ts       # server-only 站点与 TURN 配置
+│   │   └── serverRuntime.ts       # server-only 站点、TURN 与 Redis 配置
 │   ├── chat/
 │   │   ├── types.ts                # 聊天领域类型
 │   │   └── useTwoOnlyChat.ts       # 状态与用例协调器
@@ -180,8 +180,8 @@ twoonly/
 │   │   └── invitation.ts           # 房间 URL 与邀请链接
 │   ├── signal/
 │   │   ├── types.ts                       # 信令协议与结构校验
-│   │   ├── supabaseSignalTransport.ts     # Supabase 主信令
-│   │   ├── httpsSignalTransport.ts        # 浏览器 HTTPS 降级信令
+│   │   ├── supabaseSignalTransport.ts     # Supabase WebSocket 信令
+│   │   ├── httpsSignalTransport.ts        # 浏览器同源 HTTPS 信令
 │   │   ├── httpsSignalProtocol.ts         # HTTPS 请求/响应校验
 │   │   ├── serverSignalStore.ts           # 服务端 Redis Stream
 │   │   └── signalTransport.ts             # 双活聚合与去重
@@ -218,8 +218,7 @@ twoonly/
 │   ├── turn-configuration.md       # TURN 配置
 │   ├── faq.md                      # 常见问题与连接排障
 │   ├── webrtc-security.md          # 通道与安全实现
-│   └── assets/
-│       └── twoonly-architecture-overview.png
+│   └── assets/                     # 架构总览与 FAQ 编号流程图
 ├── public/
 │   ├── og.jpg                      # 分享卡片
 │   └── og.png                      # 分享卡片源图

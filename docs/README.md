@@ -20,7 +20,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 - [WebRTC、双工通道与加密](webrtc-security.md)：Offer/Answer、ICE、STUN/TURN、DataChannel、AES-GCM、分片、威胁边界。
 - [TURN 配置手册](turn-configuration.md)：托管服务和 Coturn 自建方式、端口、证书、Vercel 环境变量与验收。
 - [常见问题与网络排障 FAQ](faq.md)：TURN 可达性、两端状态不一致、重连、国内网络和常见产品边界。
-- [Supabase 不可达时的信令容灾方案](signaling-resilience.md)：Supabase + Vercel HTTPS 双活信令、Redis Stream、去重和验收矩阵。
+- [Supabase + Vercel HTTPS 双活信令](signaling-resilience.md)：两条信令、Redis Stream、去重和验收矩阵。
 - [Supabase、Vercel 与部署运维](deployment-operations.md)：环境变量、Supabase 配置、Vercel 部署、测试和国内访问方案。
 
 ## 一张图看懂
@@ -41,7 +41,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 | 历史记录 | 每台设备的 `localStorage`，仅保存 `{id, iv, data}` 密文，最多 200 条 |
 | 消息类型 | 文字、图片、语音；图片/语音单条上限 1.5 MB |
 | 大消息处理 | 加密后 JSON 按 12,000 字符分片，在接收端重组并解密 |
-| 部署 | Vercel 页面、HTTPS 降级信令与 Cloudflare TURN 凭证接口；Supabase 提供主 WebSocket 信令 |
+| 部署 | Vercel 页面、同源 HTTPS 信令与 Cloudflare TURN 凭证接口；Supabase 同时提供 WebSocket 信令 |
 
 ## 必须理解的边界
 

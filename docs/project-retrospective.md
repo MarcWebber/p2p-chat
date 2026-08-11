@@ -30,7 +30,7 @@ timeline
   可维护 : 从大型单文件拆成 chat / crypto / signal / webrtc / storage / ui
   可恢复 : 增加 negotiationId、信令队列和自动重新握手
   可跨网 : 接入 Supabase Realtime 信令
-  可降级 : 增加 Vercel HTTPS + Redis Stream 密文信令
+  可容灾 : 增加 Vercel HTTPS + Redis Stream 密文信令
   可兜底 : 接入 Cloudflare TURN 短时凭证
   可部署 : 持久化 Vercel Production 环境变量并完成线上验收
   更对等 : protocol v2、双方 Hello、确定性 Offer 选举与 epoch 隔离
@@ -61,13 +61,13 @@ flowchart TD
 - Storage 只存密文，不自行解密；
 - UI 只调控制器，不直接操作 Supabase 和 PeerConnection。
 
-详细基线见 [代码规模与复杂度](code-metrics.md)。`processSignal` 仍然是最复杂的函数，也是未来最值得继续按消息类型拆分的地方。
+当前基线见 [代码规模与复杂度](code-metrics.md)。复杂度主要集中在信令输入校验、HTTPS 轮询和 WebRTC 协商状态机；这些边界应继续按状态与职责清理，而不是单纯压缩行数。
 
 ## 这次遇到的几个真实问题
 
 ### 1. 本地模拟能用，外部用户不能用
 
-早期实现曾为同浏览器双标签页保留 `BroadcastChannel` 信令。它绕开 Supabase，导致本地成功无法证明 Realtime WebSocket 或跨设备网络成立。这个伪 fallback 后来被完整删除。项目先统一使用 Supabase，随后才增加真正可跨设备的同源 Vercel HTTPS 降级：浏览器把同一条信令双发到 Supabase 和 `/api/signal`，后者只把 AES-GCM 密文短暂写入 Redis Stream。
+早期实现曾为同浏览器双标签页保留 `BroadcastChannel` 信令。它绕开 Supabase，导致本地成功无法证明 Realtime WebSocket 或跨设备网络成立。这个伪 fallback 后来被完整删除。项目先统一使用 Supabase，随后增加真正可跨设备的同源 Vercel HTTPS 路径：浏览器从启动起把同一条信令双发到 Supabase 和 `/api/signal`，后者只把 AES-GCM 密文短暂写入 Redis Stream。
 
 跨设备需要至少三件事同时正确：
 
@@ -98,7 +98,7 @@ STUN 只能帮忙发现映射，并不能保证 NAT 允许对端使用这个映�
 
 项目后来增加 `/api/turn-credentials`，由 Vercel 服务端用 Cloudflare 长期 Token 生成短时凭证。浏览器拿到的是临时 `iceServers`，长期 Token 不进入前端包。
 
-验证时没有只看“接口返回成功”，而是把 `iceTransportPolicy` 强制设为 `relay`，让两端都显示“TURN 加密中继”，再实际发送一条加密消息。这个测试把“有配置”提升成了“确实有流量走中继”。
+验证时不能只看“接口返回成功”。完整证据必须继续检查 relay candidate、实际选中的 Candidate Pair、双向字节和服务端流量。当前最终浏览器回归环境出现过 TURN 701 超时，因此这里只确认凭据服务已经配置，不把它写成“所有网络的 relay 已验证”。
 
 ### 4. 本地接口正常，线上却返回 403
 
@@ -161,15 +161,15 @@ flowchart LR
 - Next.js 生产构建通过；
 - 完全关闭 Supabase 配置后，两个浏览器仅通过 Vercel HTTPS 模拟端点完成握手；
 - HTTPS-only 模式下双向消息成功，单端刷新后自动重新握手并继续收发；
-- 参与者 A、B 在独立浏览器中强制使用 TURN，双方显示中继模式；
-- 加密测试消息成功到达对端；
+- 生产环境在 Supabase 不可用时，仅通过 Vercel HTTPS 信令完成双端握手；
+- HTTPS-only 模式下双向加密消息成功，单端刷新后自动重握手；
 - 生产首页 HTTP 200；
 - 生产凭证接口 HTTP 200；
-- 接口返回 2 组 ICE Server、6 个 TURN URL、约 24 小时 TTL；
-- 当前生产 deployment 没有 error、warning 或 5xx；
+- `/api/signal` 返回 `configured:true`，真实 Redis publish/poll 成功；
+- 验收窗口内 `/api/signal` 31 次请求均为 200，Vercel Runtime Error 为 0；
 - 仓库没有跟踪任何 Cloudflare 长期 Token。
 
-这不等于“已经在全国所有运营商完成 SLA 级验证”。它证明的是：代码、生产配置、TURN API 和真实中继路径已经分别跑通。中国大陆稳定性仍需要真实地域与运营商测试。
+这不等于“已经在全国所有运营商完成 SLA 级验证”。它证明的是：代码、生产配置、HTTPS-only 信令、双向 DataChannel 和刷新重连已经跑通。TURN relay 与中国大陆稳定性仍需要真实设备、不同网络和运营商测试。
 
 ## 安全边界：我们保护了什么
 

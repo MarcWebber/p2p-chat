@@ -15,8 +15,8 @@ TwoOnly 运行时有六类参与组件：
 | 组件 | 做什么 | 不做什么 |
 | --- | --- | --- |
 | 浏览器 A / B | UI、加解密、WebRTC、本地历史 | 不把聊天正文交给业务服务器 |
-| Vercel | 发网页、运行 TURN 凭据接口和同源 HTTPS 降级信令 | 不保存聊天正文 |
-| Supabase Realtime | 主路径交换 `hello / offer / answer / candidate` | 不转发聊天正文 |
+| Vercel | 发网页、运行 TURN 凭据接口和同源 HTTPS 信令 | 不保存聊天正文 |
+| Supabase Realtime | 通过 WebSocket 交换 `hello / offer / answer / candidate` | 不转发聊天正文 |
 | Redis Stream | 暂存 AES-GCM 密文信令，180 秒过期 | 不知道 fragment 密钥，不保存聊天正文 |
 | STUN | 告诉浏览器公网侧看到的地址 | 不转发聊天内容 |
 | TURN | 直连不通时中继 WebRTC 数据 | 不负责房间和消息历史 |
@@ -41,7 +41,7 @@ flowchart LR
   A <==>|"聊天密文：DataChannel"| B
 ```
 
-第一条是**信令链路**：让两端交换 SDP 和 ICE Candidate。WebRTC 规范故意没有规定信令必须怎么做，所以 WebSocket、Socket.IO、Supabase Broadcast、HTTP 轮询都可以。TwoOnly 以 Supabase 为主，同时使用 Vercel 同源 HTTPS + Redis Stream 降级；双方双发双收，避免单边切换后落进两个不同信令网络。
+第一条是**信令链路**：让两端交换 SDP 和 ICE Candidate。WebRTC 规范故意没有规定信令必须怎么做，所以 WebSocket、Socket.IO、Supabase Broadcast、HTTP 轮询都可以。TwoOnly 同时使用 Supabase WebSocket 与 Vercel 同源 HTTPS + Redis Stream；双方双发双收，避免单边切换后落进两个不同信令网络。
 
 第二条是**路径发现链路**：ICE 调用 STUN/TURN，收集和测试候选路径。信令服务器不会替浏览器“打洞”。
 
@@ -236,7 +236,7 @@ flowchart TD
 
 ## 断线重连：项目里最容易被低估的一段
 
-第一次握手成功只算完成了一半。移动网络切换、电脑休眠、标签页后台节流、Supabase WebSocket 短暂中断都会把连接撕开。
+第一次握手成功只算完成了一半。移动网络切换、电脑休眠、标签页后台节流和已选 ICE 路径失效都可能把连接撕开。Supabase WebSocket 单独中断不会关闭已经打开的 DataChannel；它影响的是下一轮握手，且同源 HTTPS 仍可接替信令。
 
 TwoOnly 的恢复策略是：
 
@@ -290,11 +290,11 @@ v2 不再把消息作者写成 host/guest，而是使用当前标签页视角的
 2. 看当前 nominated / selected pair；
 3. 看 bytesSent、bytesReceived 是否增长；
 4. 强制 `iceTransportPolicy: "relay"`，验证 TURN 而不是“猜测 TURN 应该没问题”；
-5. 同时检查 Supabase Realtime 和 TURN 服务端日志。
+5. 同时检查 Supabase Realtime、Vercel `/api/signal` 和 TURN 服务端日志。
 
 ## 到这里，可以把整件事记成一句话
 
-> Supabase 帮两个人交换地图，ICE 尝试找路，STUN 告诉双方自己在公网的样子，TURN 在无路可走时当中转站，DataChannel 负责双工运输，AES-GCM 让货物在装车前就已经上锁。
+> Supabase 与同源 HTTPS 帮两个人交换地图，ICE 尝试找路，STUN 告诉双方自己在公网的样子，TURN 在无路可走时当中转站，DataChannel 负责双工运输，AES-GCM 让货物在装车前就已经上锁。
 
 这套模型既能解释 TwoOnly，也能解释大多数一对一 WebRTC 应用。
 
