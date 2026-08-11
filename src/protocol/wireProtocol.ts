@@ -13,18 +13,13 @@ type ChunkPacket = {
 export function encodeEncryptedWire(wire: EncryptedWire) {
   const serialized = JSON.stringify(wire);
   const total = Math.ceil(serialized.length / CHUNK_SIZE);
-  const packets: string[] = [];
-  for (let index = 0; index < total; index += 1) {
-    const packet: ChunkPacket = {
-      type: "chunk",
-      id: wire.id,
-      index,
-      total,
-      data: serialized.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE),
-    };
-    packets.push(JSON.stringify(packet));
-  }
-  return packets;
+  return Array.from({ length: total }, (_, index) => JSON.stringify({
+    type: "chunk",
+    id: wire.id,
+    index,
+    total,
+    data: serialized.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE),
+  } satisfies ChunkPacket));
 }
 
 export class EncryptedWireAssembler {

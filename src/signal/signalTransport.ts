@@ -19,24 +19,14 @@ type SignalTransportOptions = {
   onDiagnostic: ConnectionDiagnosticSink;
 };
 
-export type SignalTransport = {
-  start: () => void;
-  send: (message: SignalMessage) => void;
-  dispose: () => void;
-};
-
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 export const REMOTE_SIGNALING_ENABLED = Boolean(SUPABASE_URL && SUPABASE_KEY);
 
+const SIGNAL_STAGES = { hello: "hello", offer: "sdp", answer: "sdp", candidate: "ice", rejected: "signal" } as const;
+
 function signalTrace(type: SignalMessage["type"]) {
-  const stage = type === "hello"
-    ? "hello"
-    : type === "offer" || type === "answer"
-      ? "sdp"
-      : type === "candidate"
-        ? "ice"
-        : "signal";
+  const stage = SIGNAL_STAGES[type];
   return { stage, code: type === "hello" ? "hello" : `${stage}.${type}` } as const;
 }
 
@@ -79,7 +69,7 @@ export function createSignalTransport({
   onMessage,
   onStatus,
   onDiagnostic,
-}: SignalTransportOptions): SignalTransport {
+}: SignalTransportOptions) {
   const receive = (value: unknown, local = false) => {
     if (!isSignalMessage(value)) {
       const legacy = isLegacySignalMessage(value);
@@ -201,7 +191,7 @@ export function createSignalTransport({
           }
         });
       },
-      send(message) {
+      send(message: SignalMessage) {
         const { stage, code } = signalTrace(message.type);
         const sentAt = Date.now();
         onDiagnostic(signalDiagnostic(message, "sent"));
@@ -267,7 +257,7 @@ export function createSignalTransport({
       });
       onStatus("subscribed");
     },
-    send(message) {
+    send(message: SignalMessage) {
       onDiagnostic(signalDiagnostic(message, "sent", true));
       channel.postMessage(message);
     },

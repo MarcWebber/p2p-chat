@@ -3,17 +3,15 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEv
 import type {
   ChatMessage,
   ConnectionState,
-  DecryptedChatMessage,
   EncryptedWire,
-  LegacyRole,
   MessageKind,
 } from "@/src/chat/types";
-import { createMessageCrypto, createSafetyCode, randomToken, type MessageCrypto } from "@/src/crypto/messageCrypto";
+import { createMessageCrypto, createSafetyCode, randomToken } from "@/src/crypto/messageCrypto";
 import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
 import { MAX_FILE_BYTES, readAsDataUrl } from "@/src/media/files";
 import { useAudioRecorder } from "@/src/media/useAudioRecorder";
 import { createRoomInvitation, createRoomUrl, readRoomInvitation } from "@/src/room/invitation";
-import { createSignalTransport, REMOTE_SIGNALING_ENABLED, type SignalTransport } from "@/src/signal/signalTransport";
+import { createSignalTransport } from "@/src/signal/signalTransport";
 import {
   clearEncryptedHistory,
   loadEncryptedHistory,
@@ -24,33 +22,11 @@ import {
 import { WebRtcSession } from "@/src/webrtc/WebRtcSession";
 import { resolveIceConfiguration } from "@/src/webrtc/iceConfig";
 
-function normalizeStoredMessage(
-  message: DecryptedChatMessage,
-  sentByThisTab: boolean,
-  legacyRole: LegacyRole | undefined,
-): ChatMessage {
-  const legacyMine = legacyRole
-    && (message.author === "host" || message.author === "guest")
-    && message.author === legacyRole;
-  return {
-    ...message,
-    author: sentByThisTab || legacyMine ? "self" : "peer",
-  };
-}
-
-function saveEncryptedMessage(roomId: string, wire: EncryptedWire) {
-  try {
-    persistEncryptedMessage(roomId, wire);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function useTwoOnlyChat() {
-  const [roomId, setRoomId] = useState("");
-  const [secret, setSecret] = useState("");
-  const [legacyRole, setLegacyRole] = useState<LegacyRole | undefined>(undefined);
+  const [invitation, setInvitation] = useState<ReturnType<typeof readRoomInvitation>>();
+  const roomId = invitation?.roomId ?? "";
+  const secret = invitation?.secret ?? "";
+  const legacyRole = invitation?.legacyRole;
   const [participantId, setParticipantId] = useState(() => `peer-${randomToken(12)}`);
   const [connection, setConnection] = useState<ConnectionState>("waiting");
   const [connectionMode, setConnectionMode] = useState("等待另一位成员");
@@ -58,11 +34,10 @@ export function useTwoOnlyChat() {
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState(false);
-  const [ready, setReady] = useState(false);
   const [diagnostics] = useState(() => new ConnectionDiagnostics());
 
   const sessionRef = useRef<WebRtcSession | null>(null);
-  const messageCryptoRef = useRef<MessageCrypto | null>(null);
+  const messageCryptoRef = useRef<ReturnType<typeof createMessageCrypto> | null>(null);
   const copyTimerRef = useRef<number | undefined>(undefined);
 
   const sendMessage = async (kind: MessageKind, content: string, fileName?: string) => {
@@ -78,7 +53,7 @@ export function useTwoOnlyChat() {
     };
     markMessageAsSent(roomId, message.id);
     const wire = await messageCrypto.encrypt(message);
-    if (!saveEncryptedMessage(roomId, wire)) {
+    if (!persistEncryptedMessage(roomId, wire)) {
       setNotice("本地空间不足，这条大文件消息没有写入历史记录。");
     }
     setMessages((current) => [...current, message]);
@@ -94,17 +69,14 @@ export function useTwoOnlyChat() {
   });
 
   useEffect(() => {
-    const invitation = readRoomInvitation(window.location);
-    if (invitation) {
-      setRoomId(invitation.roomId);
-      setSecret(invitation.secret);
-      setLegacyRole(invitation.legacyRole);
+    const currentInvitation = readRoomInvitation(window.location);
+    if (currentInvitation) {
       diagnostics.report({
         stage: "client",
         code: "client.invitation.ready",
         level: "success",
         message: "邀请信息解析完成",
-        details: { protocol: 2, legacyLink: Boolean(invitation.legacyRole), online: navigator.onLine },
+        details: { protocol: 2, legacyLink: Boolean(currentInvitation.legacyRole), online: navigator.onLine },
         dedupeKey: "invitation-ready",
       });
     } else {
@@ -116,14 +88,14 @@ export function useTwoOnlyChat() {
         dedupeKey: "landing-ready",
       });
     }
-    setReady(true);
+    setInvitation(currentInvitation);
   }, [diagnostics]);
 
   useEffect(() => {
     if (!roomId || !secret) return;
 
     let active = true;
-    let transport: SignalTransport | null = null;
+    let transport: ReturnType<typeof createSignalTransport> | null = null;
     diagnostics.report({
       stage: "client",
       code: "client.bootstrap.start",
@@ -144,7 +116,7 @@ export function useTwoOnlyChat() {
         const decrypted = await messageCrypto.decrypt(wire);
         const message: ChatMessage = { ...decrypted, author: "peer" };
         if (!active) return;
-        if (!saveEncryptedMessage(roomId, wire)) {
+        if (!persistEncryptedMessage(roomId, wire)) {
           setNotice("本地空间不足，这条大文件消息没有写入历史记录。");
         }
         setMessages((current) => current.some((item) => item.id === message.id)
@@ -190,11 +162,8 @@ export function useTwoOnlyChat() {
       loadEncryptedHistory(roomId).map(async (wire) => {
         try {
           const message = await messageCrypto.decrypt(wire);
-          return normalizeStoredMessage(
-            message,
-            wasMessageSentByThisTab(roomId, message.id),
-            legacyRole,
-          );
+          const mine = wasMessageSentByThisTab(roomId, message.id) || message.author === legacyRole;
+          return { ...message, author: mine ? "self" : "peer" } satisfies ChatMessage;
         } catch {
           return null;
         }
@@ -252,20 +221,18 @@ export function useTwoOnlyChat() {
     if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
   }, []);
 
-  const inviteUrl = roomId && secret && typeof window !== "undefined"
-    ? createRoomUrl(window.location.origin, { roomId, secret })
+  const inviteUrl = invitation && typeof window !== "undefined"
+    ? createRoomUrl(window.location.origin, invitation)
     : "";
   const safetyCode = secret ? createSafetyCode(secret) : "";
 
   const createRoom = () => {
     cancelRecording();
     sessionRef.current?.dispose();
-    const invitation = createRoomInvitation();
-    window.history.replaceState(null, "", createRoomUrl(window.location.origin, invitation));
+    const nextInvitation = createRoomInvitation();
+    window.history.replaceState(null, "", createRoomUrl(window.location.origin, nextInvitation));
     setParticipantId(`peer-${randomToken(12)}`);
-    setRoomId(invitation.roomId);
-    setSecret(invitation.secret);
-    setLegacyRole(undefined);
+    setInvitation(nextInvitation);
     setConnection("waiting");
     setConnectionMode("等待另一位成员");
     setMessages([]);
@@ -327,9 +294,7 @@ export function useTwoOnlyChat() {
   };
 
   return {
-    ready,
-    hasRemoteSignaling: REMOTE_SIGNALING_ENABLED,
-    inRoom: Boolean(roomId && secret),
+    view: invitation === undefined ? "loading" : invitation ? "chat" : "landing",
     connection,
     connectionMode,
     messages,

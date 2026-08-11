@@ -86,15 +86,13 @@ function sanitizeDetails(details: ConnectionDiagnosticEvent["details"]) {
   return Object.keys(safe).length ? safe : undefined;
 }
 
-function formatConsoleTime(timestamp: number) {
-  return new Date(timestamp).toLocaleTimeString("zh-CN", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    fractionalSecondDigits: 3,
-  });
-}
+const formatConsoleTime = new Intl.DateTimeFormat("zh-CN", {
+  hour12: false,
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  fractionalSecondDigits: 3,
+}).format;
 
 export class ConnectionDiagnostics {
   readonly traceId: string;

@@ -52,14 +52,12 @@ function getStageStatus(entries: readonly ConnectionDiagnosticEntry[], stage: Di
   return "pending";
 }
 
-function formatTime(timestamp: number) {
-  return new Date(timestamp).toLocaleTimeString("zh-CN", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
+const formatTime = new Intl.DateTimeFormat("zh-CN", {
+  hour12: false,
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+}).format;
 
 export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnosticsPanelProps) {
   const snapshot = useSyncExternalStore(

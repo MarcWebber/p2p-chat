@@ -11,10 +11,10 @@ const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
 const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
 const iceTransportPolicy: RTCIceTransportPolicy =
   process.env.NEXT_PUBLIC_ICE_TRANSPORT_POLICY === "relay" ? "relay" : "all";
-
-const HAS_STATIC_TURN_CONFIGURATION = Boolean(
-  turnUrls.length && turnUsername && turnCredential,
-);
+const staticTurnServer = turnUrls.length && turnUsername && turnCredential
+  ? { urls: turnUrls, username: turnUsername, credential: turnCredential }
+  : null;
+const HAS_STATIC_TURN_CONFIGURATION = Boolean(staticTurnServer);
 
 const STATIC_ICE_CONFIGURATION: RTCConfiguration = {
   iceServers: [
@@ -24,9 +24,7 @@ const STATIC_ICE_CONFIGURATION: RTCConfiguration = {
         "stun:stun.l.google.com:19302",
       ]),
     },
-    ...(HAS_STATIC_TURN_CONFIGURATION && turnUsername && turnCredential
-      ? [{ urls: turnUrls, username: turnUsername, credential: turnCredential }]
-      : []),
+    ...(staticTurnServer ? [staticTurnServer] : []),
   ],
   iceCandidatePoolSize: 4,
   iceTransportPolicy,

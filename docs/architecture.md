@@ -119,11 +119,13 @@ https://站点/?room=<roomId>#<secret>
 - 未完成消息分片、输入框和当前消息列表；
 - 连接模式和提示状态。
 
+聊天控制器只保存一份邀请状态：`undefined` 表示浏览器端还没有完成 URL 解析，`null` 表示当前是首页，包含 `roomId / secret / legacyRole` 的对象表示已经进入聊天页。`roomId`、会话秘密和旧链接迁移提示都从这份对象派生，不再用四组可以短暂失配的 React state 表示同一事实。客户端入口直接根据这三个状态渲染空壳、首页或聊天页。
+
 `WebRtcSession` 现在使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。实例创建后已经具备发现能力，信令就绪才启动 Hello 定时器，因此不再保留没有独立行为的 `idle` 和空 `start()`。对端身份收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连或换届时通过一个入口清理 Peer、协商和 Candidate 缓存。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
 
 诊断日志统一经过 `trace(stage, code, message, options)`，连接状态和用户提示统一经过 `show(...)`。这两个入口保留了完整排障证据链，但删除了散落在主流程里的重复日志对象。Candidate 解析和最终 Candidate Pair 统计移到纯函数模块 `rtcStats.ts`，不再挤占会话状态机。
 
-聊天消息中的 `author` 使用 `self / peer`，只表达当前标签页的 UI 方向。每次发送时，本标签页把消息 ID 追加到 `sessionStorage` 的 `twoonly:<roomId>:sent-message-ids:v2`；刷新后先解密 `localStorage` 历史，再用这份 ID 列表恢复“我/对方”。旧版密文里的 `host / guest` author 仍能借助旧 URL role 提示迁移读取，但不会再写入新消息。
+聊天消息中的 `author` 使用 `self / peer`，只表达当前标签页的 UI 方向。每次发送时，本标签页把消息 ID 追加到 `sessionStorage` 的 `twoonly:<roomId>:sent-message-ids:v2`；刷新后先解密 `localStorage` 历史，再用这份 ID 列表恢复“我/对方”。旧版密文里的 `host / guest` author 仍能借助旧 URL role 提示迁移读取，但不会再写入新消息。Storage 模块同时拥有密文历史的读取、去重、容量裁剪和写入异常边界；控制器只根据成功/失败结果决定是否提示用户，不再重复包一层 `try/catch`。
 
 ## 6. 文件结构
 

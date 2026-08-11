@@ -48,10 +48,8 @@ export type SignalMessage =
   | CandidateSignal
   | RejectedSignal;
 
-export type OutgoingSignal = SignalMessage extends infer Message
-  ? Message extends SignalMessage
-    ? Omit<Message, "protocol" | "from" | "fromEpoch">
-    : never
+export type OutgoingSignal<Message extends SignalMessage = SignalMessage> = Message extends SignalMessage
+  ? Omit<Message, "protocol" | "from" | "fromEpoch">
   : never;
 
 function isPositiveEpoch(value: unknown): value is number {

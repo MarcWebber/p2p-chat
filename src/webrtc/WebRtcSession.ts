@@ -461,10 +461,6 @@ export class WebRtcSession {
       }
       return;
     }
-    await this.startOffer(lock);
-  }
-
-  private async startOffer(lock: PeerLock) {
     const negotiation: Negotiation = {
       id: randomToken(8),
       side: "offerer",

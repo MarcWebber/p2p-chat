@@ -6,21 +6,32 @@ function getMessageStorageKey(roomId: string) {
   return `twoonly:${roomId}:messages`;
 }
 
-export function loadEncryptedHistory(roomId: string): EncryptedWire[] {
-  if (!roomId) return [];
+function loadArray(storage: Storage, key: string) {
   try {
-    const value = JSON.parse(localStorage.getItem(getMessageStorageKey(roomId)) ?? "[]") as unknown;
-    return Array.isArray(value) ? value as EncryptedWire[] : [];
+    const value = JSON.parse(storage.getItem(key) ?? "[]") as unknown;
+    return Array.isArray(value) ? value : [];
   } catch {
     return [];
   }
 }
 
+export function loadEncryptedHistory(roomId: string): EncryptedWire[] {
+  return roomId ? loadArray(localStorage, getMessageStorageKey(roomId)) as EncryptedWire[] : [];
+}
+
 export function persistEncryptedMessage(roomId: string, wire: EncryptedWire) {
-  const storageKey = getMessageStorageKey(roomId);
-  const existing = loadEncryptedHistory(roomId);
-  if (existing.some((item) => item.id === wire.id)) return;
-  localStorage.setItem(storageKey, JSON.stringify([...existing, wire].slice(-MAX_STORED_MESSAGES)));
+  try {
+    const existing = loadEncryptedHistory(roomId);
+    if (!existing.some((item) => item.id === wire.id)) {
+      localStorage.setItem(
+        getMessageStorageKey(roomId),
+        JSON.stringify([...existing, wire].slice(-MAX_STORED_MESSAGES)),
+      );
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function clearEncryptedHistory(roomId: string) {
@@ -32,12 +43,8 @@ function getSentMessageStorageKey(roomId: string) {
 }
 
 function loadSentMessageIds(roomId: string) {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(getSentMessageStorageKey(roomId)) ?? "[]") as unknown;
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
+  return loadArray(sessionStorage, getSentMessageStorageKey(roomId))
+    .filter((item): item is string => typeof item === "string");
 }
 
 export function markMessageAsSent(roomId: string, messageId: string) {

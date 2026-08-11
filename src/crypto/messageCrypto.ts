@@ -59,5 +59,3 @@ export function createMessageCrypto(secret: string) {
     },
   };
 }
-
-export type MessageCrypto = ReturnType<typeof createMessageCrypto>;

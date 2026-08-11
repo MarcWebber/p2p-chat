@@ -15,20 +15,9 @@ function extension(file) {
   return path.extname(file).toLowerCase();
 }
 
-function isTextFile(file) {
-  return textExtensions.has(extension(file));
-}
-
 function countLines(text) {
   if (!text) return 0;
   return text.split(/\r?\n/).length - (text.endsWith("\n") ? 1 : 0);
-}
-
-function functionName(node) {
-  if (node.name?.getText) return node.name.getText();
-  const parent = node.parent;
-  if (parent && ts.isVariableDeclaration(parent)) return parent.name.getText();
-  return "anonymous";
 }
 
 function isFunctionLike(node) {
@@ -80,21 +69,25 @@ let applicationFiles = 0;
 for (const file of trackedFiles) {
   const absolute = path.join(root, file);
   const bytes = readFileSync(absolute);
+  const fileExtension = extension(file);
   totalBytes += bytes.byteLength;
-  const entry = { file, bytes: bytes.byteLength, lines: null, language: extension(file).slice(1) || "unknown" };
-  if (isTextFile(file)) {
+  const entry = { file, bytes: bytes.byteLength, lines: null, language: fileExtension.slice(1) || "unknown" };
+  if (textExtensions.has(fileExtension)) {
     const text = bytes.toString("utf8");
     entry.lines = countLines(text);
     totalLines += entry.lines;
     const isApplicationFile = /^(app|components|src)\//.test(file);
-    if (codeExtensions.has(extension(file)) && isApplicationFile) {
+    if (codeExtensions.has(fileExtension) && isApplicationFile) {
       applicationFiles += 1;
       applicationLines += entry.lines;
-      if (extension(file) === ".ts" || extension(file) === ".tsx") {
+      if (fileExtension === ".ts" || fileExtension === ".tsx") {
         const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
         const visit = (node) => {
           if (isFunctionLike(node)) {
-            functions.push({ file, name: functionName(node), complexity: complexityForFunction(node) });
+            const name = node.name?.getText
+              ? node.name.getText()
+              : ts.isVariableDeclaration(node.parent) ? node.parent.name.getText() : "anonymous";
+            functions.push({ file, name, complexity: complexityForFunction(node) });
           }
           ts.forEachChild(node, visit);
         };
