@@ -46,7 +46,7 @@ credentials.ready                 source=dynamic，turnConfigured=true
 signal.subscribe.start
 signal.subscribed                 Supabase Realtime 已订阅
 hello.sent / hello.ack             双方都发 Hello，服务端确认 ok
-hello.received / peer.locked       收到并锁定另一位参与者
+hello.received                     收到并锁定另一位参与者
 peer.elected                       双方得到同一个临时 Offer 发起方
 ```
 

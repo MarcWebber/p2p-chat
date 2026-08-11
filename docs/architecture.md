@@ -119,7 +119,9 @@ https://站点/?room=<roomId>#<secret>
 - 未完成消息分片、输入框和当前消息列表；
 - 连接模式和提示状态。
 
-`WebRtcSession` 统一持有 PeerConnection、DataChannel、协商 ID、信令队列和定时器。PeerConnection、DataChannel 与消息回调都会检查自己是否仍是当前实例；控制器销毁会话后，旧实例也不能再写入 React 状态，避免异步 `close` 或 `message` 污染新房间。
+`WebRtcSession` 现在使用单一 `phase`（idle / discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。对端身份收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连或换届时通过一个入口清理 Peer、协商和 Candidate 缓存。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
+
+诊断日志统一经过 `trace(stage, code, message, options)`，连接状态和用户提示统一经过 `show(...)`。这两个入口保留了完整排障证据链，但删除了散落在主流程里的重复日志对象。Candidate 解析和最终 Candidate Pair 统计移到纯函数模块 `rtcStats.ts`，不再挤占会话状态机。
 
 聊天消息中的 `author` 使用 `self / peer`，只表达当前标签页的 UI 方向。每次发送时，本标签页把消息 ID 追加到 `sessionStorage` 的 `twoonly:<roomId>:sent-message-ids:v2`；刷新后先解密 `localStorage` 历史，再用这份 ID 列表恢复“我/对方”。旧版密文里的 `host / guest` author 仍能借助旧 URL role 提示迁移读取，但不会再写入新消息。
 
@@ -167,7 +169,8 @@ twoonly/
 │   │   └── formatters.ts           # UI 格式化
 │   └── webrtc/
 │       ├── WebRtcSession.ts        # Peer、握手、重连状态机
-│       └── iceConfig.ts            # STUN/TURN 配置
+│       ├── iceConfig.ts            # STUN/TURN 配置
+│       └── rtcStats.ts             # Candidate 摘要与选中路径统计
 ├── docs/
 │   ├── README.md                   # 文档索引
 │   ├── field-guide.md              # WebRTC 原理与项目实战主线
