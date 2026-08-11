@@ -1,6 +1,8 @@
 import type { ChangeEventHandler, FormEventHandler } from "react";
 
 import type { ConnectionState } from "@/src/chat/types";
+import { CHAT_POLICY } from "@/src/config/policy";
+import { formatBytes } from "@/src/utils/format";
 
 type MessageComposerProps = {
   connection: ConnectionState;
@@ -54,7 +56,11 @@ export function MessageComposer({
         />
         <button className="send-button" type="submit" disabled={!connected || !draft.trim()}>发送</button>
       </form>
-      <p className="composer-hint">{connected ? "消息已加密保存在本机 · 图片/语音上限 1.5 MB" : "等待安全连接建立后即可发送"}</p>
+      <p className="composer-hint">
+        {connected
+          ? `消息已加密保存在本机 · 图片/语音上限 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)}`
+          : "等待安全连接建立后即可发送"}
+      </p>
     </>
   );
 }

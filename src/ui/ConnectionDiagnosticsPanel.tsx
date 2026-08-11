@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
+import { DIAGNOSTICS_POLICY } from "@/src/config/policy";
 import type {
   ConnectionDiagnosticEntry,
   ConnectionDiagnostics,
   DiagnosticStage,
 } from "@/src/diagnostics/connectionDiagnostics";
+import { copyText } from "@/src/utils/browser";
+import { formatSecondTime } from "@/src/utils/format";
 
 type ConnectionDiagnosticsPanelProps = {
   diagnostics: ConnectionDiagnostics;
@@ -52,13 +55,6 @@ function getStageStatus(entries: readonly ConnectionDiagnosticEntry[], stage: Di
   return "pending";
 }
 
-const formatTime = new Intl.DateTimeFormat("zh-CN", {
-  hour12: false,
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-}).format;
-
 export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnosticsPanelProps) {
   const snapshot = useSyncExternalStore(
     diagnostics.subscribe,
@@ -71,35 +67,20 @@ export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnostic
   const latest = entries.at(-1);
   const stageStatuses = STAGES.map((item) => ({ ...item, status: getStageStatus(entries, item.stage) }));
   const hasActiveError = stageStatuses.some((item) => item.status === "error");
-  const visibleEntries = entries.slice(-60);
+  const visibleEntries = entries.slice(-DIAGNOSTICS_POLICY.visibleEntries);
 
   useEffect(() => () => {
     if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
   }, []);
 
   const copyLogs = async () => {
-    const text = diagnostics.exportText();
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.setAttribute("readonly", "");
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      copied = document.execCommand("copy");
-      textarea.remove();
-    }
+    const copied = await copyText(diagnostics.exportText());
     setCopyState(copied ? "copied" : "failed");
     if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
     copyTimerRef.current = window.setTimeout(() => {
       copyTimerRef.current = undefined;
       setCopyState("idle");
-    }, 1_500);
+    }, DIAGNOSTICS_POLICY.logCopyFeedbackMs);
   };
 
   return (
@@ -107,7 +88,7 @@ export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnostic
       <summary>
         <span className="diagnostics-title"><i />连接诊断</span>
         <span className="diagnostics-latest">
-          {latest ? `${formatTime(latest.timestamp)} ${latest.message}` : "等待初始化日志"}
+          {latest ? `${formatSecondTime(latest.timestamp)} ${latest.message}` : "等待初始化日志"}
         </span>
         <span className="diagnostics-count">{entries.length}</span>
       </summary>
@@ -138,7 +119,7 @@ export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnostic
         <ol className="diagnostics-log">
           {visibleEntries.length ? visibleEntries.map((entry) => (
             <li className={entry.level} key={entry.id}>
-              <time>{formatTime(entry.timestamp)}</time>
+              <time>{formatSecondTime(entry.timestamp)}</time>
               <code>{entry.stage}/{entry.code}</code>
               <span>{entry.message}{entry.repeat > 1 ? ` ×${entry.repeat}` : ""}</span>
               {entry.details ? (

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { MAX_FILE_BYTES, readAsDataUrl } from "@/src/media/files";
+import { CHAT_POLICY } from "@/src/config/policy";
+import { readAsDataUrl } from "@/src/utils/browser";
+import { formatBytes } from "@/src/utils/format";
 
 type AudioRecorderOptions = {
   sessionKey: string;
@@ -63,8 +65,8 @@ export function useAudioRecorder({ sessionKey, onAudio, onNotice }: AudioRecorde
         if (streamRef.current === stream) streamRef.current = null;
         setIsRecording(false);
         if (startedInSession !== sessionKeyRef.current) return;
-        if (blob.size > MAX_FILE_BYTES) {
-          onNoticeRef.current("录音超过当前 1.5 MB 限制，请录制更短的语音。");
+        if (blob.size > CHAT_POLICY.maxAttachmentBytes) {
+          onNoticeRef.current(`录音超过当前 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)} 限制，请录制更短的语音。`);
           return;
         }
         if (blob.size) await onAudioRef.current(await readAsDataUrl(blob));

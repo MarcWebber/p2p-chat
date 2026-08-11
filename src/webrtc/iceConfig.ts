@@ -1,34 +1,10 @@
+import { RTC_POLICY } from "@/src/config/policy";
+import { PUBLIC_ICE_CONFIG } from "@/src/config/publicRuntime";
 import {
   diagnosticErrorDetails,
   type ConnectionDiagnosticSink,
 } from "@/src/diagnostics/connectionDiagnostics";
-
-const splitIceUrls = (value: string | undefined, fallback: string[]) =>
-  value?.split(",").map((item) => item.trim()).filter(Boolean) ?? fallback;
-
-const turnUrls = splitIceUrls(process.env.NEXT_PUBLIC_TURN_URLS, []);
-const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
-const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
-const iceTransportPolicy: RTCIceTransportPolicy =
-  process.env.NEXT_PUBLIC_ICE_TRANSPORT_POLICY === "relay" ? "relay" : "all";
-const staticTurnServer = turnUrls.length && turnUsername && turnCredential
-  ? { urls: turnUrls, username: turnUsername, credential: turnCredential }
-  : null;
-const HAS_STATIC_TURN_CONFIGURATION = Boolean(staticTurnServer);
-
-const STATIC_ICE_CONFIGURATION: RTCConfiguration = {
-  iceServers: [
-    {
-      urls: splitIceUrls(process.env.NEXT_PUBLIC_STUN_URLS, [
-        "stun:stun.cloudflare.com:3478",
-        "stun:stun.l.google.com:19302",
-      ]),
-    },
-    ...(staticTurnServer ? [staticTurnServer] : []),
-  ],
-  iceCandidatePoolSize: 4,
-  iceTransportPolicy,
-};
+import { hasTurnServer, normalizeIceServer, summarizeIceServers } from "@/src/webrtc/iceServers";
 
 type ResolvedIceConfiguration = {
   configuration: RTCConfiguration;
@@ -42,69 +18,24 @@ type TurnCredentialResponse = {
   error?: unknown;
 };
 
-const CREDENTIAL_REQUEST_TIMEOUT_MS = 10_000;
-
-function normalizeIceServer(value: unknown): RTCIceServer | null {
-  if (!value || typeof value !== "object") return null;
-  const server = value as Partial<RTCIceServer>;
-  const urls = typeof server.urls === "string"
-    ? [server.urls]
-    : Array.isArray(server.urls) && server.urls.every((url) => typeof url === "string")
-      ? server.urls
-      : [];
-  if (!urls.length || urls.some((url) => !/^(stun|turn|turns):/.test(url))) return null;
-
-  const isTurn = urls.some((url) => url.startsWith("turn:") || url.startsWith("turns:"));
-  if (isTurn && (typeof server.username !== "string" || typeof server.credential !== "string")) {
-    return null;
-  }
-  return {
-    urls,
-    ...(server.username ? { username: server.username } : {}),
-    ...(server.credential ? { credential: server.credential } : {}),
-  };
-}
-
-function summarizeIceServers(servers: RTCIceServer[]) {
-  let stunUrls = 0;
-  let turnUrls = 0;
-  const transports = new Set<string>();
-  for (const server of servers) {
-    const urls = typeof server.urls === "string" ? [server.urls] : server.urls;
-    for (const url of urls) {
-      if (url.startsWith("stun:")) stunUrls += 1;
-      if (url.startsWith("turn:") || url.startsWith("turns:")) {
-        turnUrls += 1;
-        const scheme = url.startsWith("turns:") ? "tls" : "turn";
-        const transport = new URLSearchParams(url.split("?")[1] ?? "").get("transport") ?? "udp";
-        const port = url.match(/:(\d+)(?:\?|$)/)?.[1] ?? (scheme === "tls" ? "5349" : "3478");
-        transports.add(`${scheme}/${transport}:${port}`);
-      }
-    }
-  }
-  return {
-    iceServerCount: servers.length,
-    stunUrlCount: stunUrls,
-    turnUrlCount: turnUrls,
-    transports: [...transports].join(",") || "none",
-  };
-}
-
 export async function resolveIceConfiguration(
   onDiagnostic?: ConnectionDiagnosticSink,
 ): Promise<ResolvedIceConfiguration> {
   const startedAt = Date.now();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("credential_request_timeout"), CREDENTIAL_REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => controller.abort("credential_request_timeout"),
+    RTC_POLICY.credentialRequestTimeoutMs,
+  );
   onDiagnostic?.({
     stage: "credentials",
     code: "credentials.request.start",
     message: "开始请求 TURN 短时凭据",
-    details: { endpoint: "/api/turn-credentials", timeoutMs: CREDENTIAL_REQUEST_TIMEOUT_MS },
+    details: { endpoint: RTC_POLICY.credentialEndpoint, timeoutMs: RTC_POLICY.credentialRequestTimeoutMs },
   });
 
   try {
-    const response = await fetch("/api/turn-credentials", {
+    const response = await fetch(RTC_POLICY.credentialEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
@@ -112,7 +43,7 @@ export async function resolveIceConfiguration(
       signal: controller.signal,
     });
     const durationMs = Date.now() - startedAt;
-    const responseRequestId = response.headers.get("x-twoonly-request-id") ?? undefined;
+    const responseRequestId = response.headers.get(RTC_POLICY.requestIdHeader) ?? undefined;
     let payload: TurnCredentialResponse | null = null;
     try {
       payload = await response.json() as TurnCredentialResponse;
@@ -131,7 +62,7 @@ export async function resolveIceConfiguration(
         ? payload.iceServers.map(normalizeIceServer).filter((server): server is RTCIceServer => Boolean(server))
         : [];
       const summary = summarizeIceServers(servers);
-      if (servers.length && summary.turnUrlCount) {
+      if (servers.length && hasTurnServer(servers)) {
         const expiresAt = typeof payload?.expiresAt === "number" ? payload.expiresAt : undefined;
         const requestId = typeof payload?.requestId === "string" ? payload.requestId : responseRequestId;
         onDiagnostic?.({
@@ -152,10 +83,14 @@ export async function resolveIceConfiguration(
           code: "credentials.ready",
           level: "success",
           message: "动态 TURN ICE 配置已就绪",
-          details: { source: "dynamic", turnConfigured: true, policy: iceTransportPolicy },
+          details: { source: "dynamic", turnConfigured: true, policy: PUBLIC_ICE_CONFIG.transportPolicy },
         });
         return {
-          configuration: { iceServers: servers, iceCandidatePoolSize: 4, iceTransportPolicy },
+          configuration: {
+            iceServers: servers,
+            iceCandidatePoolSize: RTC_POLICY.iceCandidatePoolSize,
+            iceTransportPolicy: PUBLIC_ICE_CONFIG.transportPolicy,
+          },
           turnConfigured: true,
         };
       }
@@ -187,7 +122,7 @@ export async function resolveIceConfiguration(
       code: timedOut ? "credentials.request.timeout" : "credentials.request.network_error",
       level: "warn",
       message: timedOut
-        ? "凭据请求超过 10 秒，已中止并继续初始化信令"
+        ? `凭据请求超过 ${RTC_POLICY.credentialRequestTimeoutMs / 1_000} 秒，已中止并继续初始化信令`
         : "浏览器无法访问凭据接口，将使用本地 ICE 配置",
       details: { durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) },
     });
@@ -195,23 +130,23 @@ export async function resolveIceConfiguration(
     clearTimeout(timeout);
   }
 
-  const fallbackSource = HAS_STATIC_TURN_CONFIGURATION ? "static-turn" : "stun-only";
+  const fallbackSource = PUBLIC_ICE_CONFIG.hasStaticTurn ? "static-turn" : "stun-only";
   onDiagnostic?.({
     stage: "credentials",
     code: "credentials.ready",
-    level: HAS_STATIC_TURN_CONFIGURATION ? "success" : "warn",
-    message: HAS_STATIC_TURN_CONFIGURATION
+    level: PUBLIC_ICE_CONFIG.hasStaticTurn ? "success" : "warn",
+    message: PUBLIC_ICE_CONFIG.hasStaticTurn
       ? "已切换到静态 TURN ICE 配置"
       : "已降级到 STUN-only；信令仍会继续启动",
     details: {
       source: fallbackSource,
-      turnConfigured: HAS_STATIC_TURN_CONFIGURATION,
-      policy: iceTransportPolicy,
-      ...summarizeIceServers(STATIC_ICE_CONFIGURATION.iceServers ?? []),
+      turnConfigured: PUBLIC_ICE_CONFIG.hasStaticTurn,
+      policy: PUBLIC_ICE_CONFIG.transportPolicy,
+      ...summarizeIceServers(PUBLIC_ICE_CONFIG.fallbackConfiguration.iceServers ?? []),
     },
   });
   return {
-    configuration: STATIC_ICE_CONFIGURATION,
-    turnConfigured: HAS_STATIC_TURN_CONFIGURATION,
+    configuration: PUBLIC_ICE_CONFIG.fallbackConfiguration,
+    turnConfigured: PUBLIC_ICE_CONFIG.hasStaticTurn,
   };
 }

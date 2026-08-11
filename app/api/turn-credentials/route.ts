@@ -1,35 +1,15 @@
-const CLOUDFLARE_TURN_API = "https://rtc.live.cloudflare.com/v1/turn/keys";
-const TURN_CREDENTIAL_TTL_SECONDS = 86_400;
-
-type CloudflareIceServer = {
-  urls: string[];
-  username?: string;
-  credential?: string;
-};
+import { RTC_POLICY } from "@/src/config/policy";
+import { SERVER_RUNTIME_CONFIG } from "@/src/config/serverRuntime";
+import { createTraceId } from "@/src/utils/ids";
+import { hasTurnServer, normalizeIceServer } from "@/src/webrtc/iceServers";
 
 type CloudflareTurnResponse = {
-  iceServers?: CloudflareIceServer[];
+  iceServers?: unknown;
 };
 
-function isCloudflareIceServer(value: unknown): value is CloudflareIceServer {
-  if (!value || typeof value !== "object") return false;
-  const server = value as Partial<CloudflareIceServer>;
-  return Array.isArray(server.urls)
-    && server.urls.length > 0
-    && server.urls.every((url) => typeof url === "string")
-    && (server.username === undefined || typeof server.username === "string")
-    && (server.credential === undefined || typeof server.credential === "string");
-}
-
-function hasTurnServer(servers: CloudflareIceServer[]) {
-  return servers.some((server) =>
-    server.urls.some((url) => url.startsWith("turn:"))
-    && Boolean(server.username)
-    && Boolean(server.credential));
-}
-
 export async function POST(request: Request) {
-  const requestId = crypto.randomUUID().slice(0, 8);
+  const { turn } = SERVER_RUNTIME_CONFIG;
+  const requestId = createTraceId();
   const startedAt = Date.now();
   const respond = (body: Record<string, unknown>, status = 200) => Response.json(
     { ...body, requestId },
@@ -37,7 +17,7 @@ export async function POST(request: Request) {
       status,
       headers: {
         "Cache-Control": "no-store, max-age=0",
-        "X-TwoOnly-Request-Id": requestId,
+        [RTC_POLICY.requestIdHeader]: requestId,
         "Server-Timing": `turn-credentials;dur=${Date.now() - startedAt}`,
         Vary: "Origin",
       },
@@ -57,25 +37,23 @@ export async function POST(request: Request) {
     return respond({ error: "cross_origin_request" }, 403);
   }
 
-  const keyId = process.env.CLOUDFLARE_TURN_KEY_ID;
-  const apiToken = process.env.CLOUDFLARE_TURN_API_TOKEN;
-  if (!keyId || !apiToken) {
+  if (!turn.keyId || !turn.apiToken) {
     console.error(`[twoonly:turn][${requestId}] TURN environment variables are missing`);
     return respond({ error: "turn_not_configured" }, 503);
   }
 
   try {
     const response = await fetch(
-      `${CLOUDFLARE_TURN_API}/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`,
+      `${turn.apiBase}/${encodeURIComponent(turn.keyId)}/credentials/generate-ice-servers`,
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${apiToken}`,
+          Authorization: `Bearer ${turn.apiToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ ttl: TURN_CREDENTIAL_TTL_SECONDS }),
+        body: JSON.stringify({ ttl: turn.credentialTtlSeconds }),
         cache: "no-store",
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.timeout(turn.providerTimeoutMs),
       },
     );
 
@@ -87,7 +65,9 @@ export async function POST(request: Request) {
     }
 
     const payload = await response.json() as CloudflareTurnResponse;
-    const iceServers = payload.iceServers?.filter(isCloudflareIceServer) ?? [];
+    const iceServers = Array.isArray(payload.iceServers)
+      ? payload.iceServers.map(normalizeIceServer).filter((server): server is RTCIceServer => Boolean(server))
+      : [];
     if (!iceServers.length || !hasTurnServer(iceServers)) {
       console.error(`[twoonly:turn][${requestId}] Cloudflare returned an invalid ICE configuration`);
       return respond({ error: "invalid_turn_configuration" }, 502);
@@ -98,7 +78,7 @@ export async function POST(request: Request) {
     );
     return respond({
       iceServers,
-      expiresAt: Date.now() + TURN_CREDENTIAL_TTL_SECONDS * 1_000,
+      expiresAt: Date.now() + turn.credentialTtlSeconds * 1_000,
     });
   } catch (error: unknown) {
     const errorName = error instanceof Error ? error.name : "UnknownError";

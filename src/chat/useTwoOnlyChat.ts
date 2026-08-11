@@ -6,11 +6,16 @@ import type {
   EncryptedWire,
   MessageKind,
 } from "@/src/chat/types";
-import { createMessageCrypto, createSafetyCode, randomToken } from "@/src/crypto/messageCrypto";
+import { CHAT_POLICY, SIGNAL_POLICY, UI_POLICY } from "@/src/config/policy";
+import { createMessageCrypto, createSafetyCode } from "@/src/crypto/messageCrypto";
 import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
-import { MAX_FILE_BYTES, readAsDataUrl } from "@/src/media/files";
 import { useAudioRecorder } from "@/src/media/useAudioRecorder";
-import { createRoomInvitation, createRoomUrl, readRoomInvitation } from "@/src/room/invitation";
+import {
+  createParticipantId,
+  createRoomInvitation,
+  createRoomUrl,
+  readRoomInvitation,
+} from "@/src/room/invitation";
 import { createSignalTransport } from "@/src/signal/signalTransport";
 import {
   clearEncryptedHistory,
@@ -19,6 +24,8 @@ import {
   persistEncryptedMessage,
   wasMessageSentByThisTab,
 } from "@/src/storage/chatStorage";
+import { copyText, readAsDataUrl } from "@/src/utils/browser";
+import { formatBytes } from "@/src/utils/format";
 import { WebRtcSession } from "@/src/webrtc/WebRtcSession";
 import { resolveIceConfiguration } from "@/src/webrtc/iceConfig";
 
@@ -27,7 +34,7 @@ export function useTwoOnlyChat() {
   const roomId = invitation?.roomId ?? "";
   const secret = invitation?.secret ?? "";
   const legacyRole = invitation?.legacyRole;
-  const [participantId, setParticipantId] = useState(() => `peer-${randomToken(12)}`);
+  const [participantId, setParticipantId] = useState(createParticipantId);
   const [connection, setConnection] = useState<ConnectionState>("waiting");
   const [connectionMode, setConnectionMode] = useState("等待另一位成员");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -76,7 +83,11 @@ export function useTwoOnlyChat() {
         code: "client.invitation.ready",
         level: "success",
         message: "邀请信息解析完成",
-        details: { protocol: 2, legacyLink: Boolean(currentInvitation.legacyRole), online: navigator.onLine },
+        details: {
+          protocol: SIGNAL_POLICY.protocolVersion,
+          legacyLink: Boolean(currentInvitation.legacyRole),
+          online: navigator.onLine,
+        },
         dedupeKey: "invitation-ready",
       });
     } else {
@@ -100,7 +111,7 @@ export function useTwoOnlyChat() {
       stage: "client",
       code: "client.bootstrap.start",
       message: "开始初始化加密聊天连接",
-      details: { protocol: 2, online: navigator.onLine },
+      details: { protocol: SIGNAL_POLICY.protocolVersion, online: navigator.onLine },
     });
     const messageCrypto = createMessageCrypto(secret);
     messageCryptoRef.current = messageCrypto;
@@ -231,7 +242,7 @@ export function useTwoOnlyChat() {
     sessionRef.current?.dispose();
     const nextInvitation = createRoomInvitation();
     window.history.replaceState(null, "", createRoomUrl(window.location.origin, nextInvitation));
-    setParticipantId(`peer-${randomToken(12)}`);
+    setParticipantId(createParticipantId());
     setInvitation(nextInvitation);
     setConnection("waiting");
     setConnectionMode("等待另一位成员");
@@ -243,7 +254,7 @@ export function useTwoOnlyChat() {
       stage: "client",
       code: "client.room.created",
       message: "已创建新的无角色双人会话",
-      details: { protocol: 2 },
+      details: { protocol: SIGNAL_POLICY.protocolVersion },
     });
   };
 
@@ -264,8 +275,8 @@ export function useTwoOnlyChat() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (file.size > MAX_FILE_BYTES) {
-      setNotice("为了保证点对点传输稳定，当前版本仅支持 1.5 MB 以内的图片。");
+    if (file.size > CHAT_POLICY.maxAttachmentBytes) {
+      setNotice(`为了保证点对点传输稳定，当前版本仅支持 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)} 以内的图片。`);
       return;
     }
     await sendMessage("image", await readAsDataUrl(file), file.name);
@@ -273,10 +284,10 @@ export function useTwoOnlyChat() {
 
   const copyInvite = async () => {
     try {
-      await navigator.clipboard.writeText(inviteUrl);
+      if (!await copyText(inviteUrl)) throw new Error("copy failed");
       setCopied(true);
       if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = window.setTimeout(() => setCopied(false), 1_600);
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), UI_POLICY.inviteCopyFeedbackMs);
     } catch {
       setNotice("复制失败，请从浏览器地址栏复制完整邀请链接。");
     }

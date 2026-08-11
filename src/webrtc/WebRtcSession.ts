@@ -1,4 +1,10 @@
 import type { ConnectionState, EncryptedWire } from "@/src/chat/types";
+import {
+  RESOURCE_NAMES,
+  RTC_POLICY,
+  SIGNAL_POLICY,
+  SIGNAL_REJECTION_REASON,
+} from "@/src/config/policy";
 import { randomToken } from "@/src/crypto/messageCrypto";
 import {
   diagnosticErrorDetails,
@@ -8,7 +14,6 @@ import {
 } from "@/src/diagnostics/connectionDiagnostics";
 import { encodeEncryptedWire, EncryptedWireAssembler } from "@/src/protocol/wireProtocol";
 import {
-  SIGNAL_PROTOCOL_VERSION,
   type AnswerSignal,
   type CandidateSignal,
   type HelloSignal,
@@ -16,6 +21,7 @@ import {
   type OutgoingSignal,
   type SignalMessage,
 } from "@/src/signal/types";
+import { shortId } from "@/src/utils/format";
 import { describeCandidate, inspectConnectionPath } from "@/src/webrtc/rtcStats";
 
 type SessionOptions = {
@@ -51,19 +57,6 @@ type Timers = {
   reconnect?: number;
   signalWarning?: number;
 };
-
-const RECONNECT_DELAY_MS = 800;
-const DISCONNECTED_GRACE_MS = 2_500;
-const ANNOUNCE_INTERVAL_MS = 1_500;
-const SIGNAL_WARNING_DELAY_MS = 3_500;
-const PEER_LOCK_TIMEOUT_MS = 10_000;
-const REJECT_BACKOFF_MS = 5_000;
-const MAX_PENDING_NEGOTIATIONS = 2;
-const MAX_PENDING_CANDIDATES = 32;
-
-function negotiationTag(value: string | undefined) {
-  return value?.slice(-6);
-}
 
 function electOfferer(localParticipantId: string, remoteParticipantId: string) {
   return localParticipantId < remoteParticipantId;
@@ -107,7 +100,7 @@ export class WebRtcSession {
       if (this.phase === "disposed" || this.channel?.readyState === "open") return;
       this.signalWarningShown = true;
       this.show("disconnected", "信令服务暂时中断，等待恢复", "信令服务正在自动重连，恢复后会重新握手。");
-    }, SIGNAL_WARNING_DELAY_MS);
+    }, RTC_POLICY.signalWarningDelayMs);
   }
 
   handleSignal = (signal: SignalMessage) => {
@@ -124,7 +117,7 @@ export class WebRtcSession {
       });
   };
 
-  reconnect(automatic = false, delayMs = RECONNECT_DELAY_MS) {
+  reconnect(automatic = false, delayMs: number = RTC_POLICY.reconnectDelayMs) {
     if (this.phase === "disposed" || (automatic && this.timers.reconnect)) return;
     this.clearTimer("reconnect");
     this.clearTimer("signalWarning");
@@ -178,7 +171,7 @@ export class WebRtcSession {
 
   private enableAnnouncements(immediate = true) {
     if (immediate) this.announce();
-    this.timers.announce ??= window.setInterval(() => this.announce(), ANNOUNCE_INTERVAL_MS);
+    this.timers.announce ??= window.setInterval(() => this.announce(), RTC_POLICY.announceIntervalMs);
   }
 
   private announce() {
@@ -193,7 +186,7 @@ export class WebRtcSession {
   private sendSignal(message: OutgoingSignal) {
     this.options.sendSignal({
       ...message,
-      protocol: SIGNAL_PROTOCOL_VERSION,
+      protocol: SIGNAL_POLICY.protocolVersion,
       from: this.options.participantId,
       fromEpoch: this.localEpoch,
     } as SignalMessage);
@@ -261,7 +254,7 @@ export class WebRtcSession {
     };
 
     peer.onconnectionstatechange = () => this.handlePeerState(peer);
-    if (side === "offerer") this.attachChannel(peer.createDataChannel("twoonly-messages", { ordered: true }));
+    if (side === "offerer") this.attachChannel(peer.createDataChannel(RESOURCE_NAMES.dataChannel, { ordered: true }));
     else peer.ondatachannel = (event) => this.attachChannel(event.channel);
     return peer;
   }
@@ -286,7 +279,7 @@ export class WebRtcSession {
       this.reconnect(true);
     } else if (state === "disconnected") {
       this.show("connecting", "连接波动，正在确认", "连接暂时中断；若未自动恢复，系统会重新握手。");
-      this.reconnect(true, DISCONNECTED_GRACE_MS);
+      this.reconnect(true, RTC_POLICY.disconnectedGraceMs);
     }
   }
 
@@ -375,7 +368,7 @@ export class WebRtcSession {
 
     if (this.lock.id !== remoteId) {
       const peerState = this.peer?.connectionState;
-      const expired = now - this.lock.seenAt >= PEER_LOCK_TIMEOUT_MS;
+      const expired = now - this.lock.seenAt >= RTC_POLICY.peerLockTimeoutMs;
       const replaceable = this.channel?.readyState !== "open"
         && (peerState === "failed" || peerState === "closed" || expired);
       if (!replaceable) return "busy" as const;
@@ -431,7 +424,10 @@ export class WebRtcSession {
       dedupeKey: `hello-${state}-${signal.fromEpoch}`,
     });
     if (state === "busy") {
-      this.sendSignal({ type: "rejected", to: signal.from, toEpoch: signal.fromEpoch, reason: "room-full" });
+      this.sendSignal({
+        type: "rejected", to: signal.from, toEpoch: signal.fromEpoch,
+        reason: SIGNAL_REJECTION_REASON.roomFull,
+      });
       return;
     }
     if (state !== "accepted") return;
@@ -452,11 +448,11 @@ export class WebRtcSession {
     if (sameRound) {
       if (
         this.peer?.signalingState === "have-local-offer"
-        && Date.now() - this.offerSentAt >= 1_000
+        && Date.now() - this.offerSentAt >= RTC_POLICY.offerResendDelayMs
         && this.sendLocalDescription(this.peer, active)
       ) {
         this.trace("sdp", "sdp.offer.resent", "重复 Hello 命中当前协商，重新发送 Offer", {
-          details: { negotiation: negotiationTag(active.id) },
+          details: { negotiation: shortId(active.id) },
         });
       }
       return;
@@ -474,7 +470,7 @@ export class WebRtcSession {
     const offer = await peer.createOffer({ iceRestart: true });
     if (!this.isCurrent(peer, negotiation)) return;
     this.trace("sdp", "sdp.offer.created", "本端已创建 Offer", {
-      details: { negotiation: negotiationTag(negotiation.id), sdpBytes: offer.sdp?.length ?? 0 },
+      details: { negotiation: shortId(negotiation.id), sdpBytes: offer.sdp?.length ?? 0 },
     });
     await peer.setLocalDescription(offer);
     if (!this.isCurrent(peer, negotiation)) return;
@@ -484,7 +480,10 @@ export class WebRtcSession {
   private async handleOffer(signal: OfferSignal) {
     const state = this.lockPeer(signal.from, signal.fromEpoch);
     if (state === "busy") {
-      this.sendSignal({ type: "rejected", to: signal.from, toEpoch: signal.fromEpoch, reason: "room-full" });
+      this.sendSignal({
+        type: "rejected", to: signal.from, toEpoch: signal.fromEpoch,
+        reason: SIGNAL_REJECTION_REASON.roomFull,
+      });
       return;
     }
     if (state !== "accepted") return;
@@ -523,7 +522,7 @@ export class WebRtcSession {
     const answer = await peer.createAnswer();
     if (!this.isCurrent(peer, negotiation)) return;
     this.trace("sdp", "sdp.answer.created", "本端已创建 Answer", {
-      details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: answer.sdp?.length ?? 0 },
+      details: { negotiation: shortId(signal.negotiationId), sdpBytes: answer.sdp?.length ?? 0 },
     });
     await peer.setLocalDescription(answer);
     if (!this.isCurrent(peer, negotiation)) return;
@@ -540,7 +539,7 @@ export class WebRtcSession {
     if (!valid) {
       this.trace("sdp", "sdp.answer.stale", "忽略不属于当前选举轮次的 Answer", {
         level: "warn",
-        details: { negotiation: negotiationTag(signal.negotiationId), active: negotiationTag(active?.id) },
+        details: { negotiation: shortId(signal.negotiationId), active: shortId(active?.id) },
       });
       return;
     }
@@ -556,7 +555,7 @@ export class WebRtcSession {
     if (!this.isCurrent(peer, active)) return;
     this.trace("sdp", "sdp.answer.applied", "本端已应用对方 Answer", {
       level: "success",
-      details: { negotiation: negotiationTag(signal.negotiationId), sdpBytes: signal.payload.sdp?.length ?? 0 },
+      details: { negotiation: shortId(signal.negotiationId), sdpBytes: signal.payload.sdp?.length ?? 0 },
     });
     await this.flushPendingIce(active, peer);
   }
@@ -581,7 +580,7 @@ export class WebRtcSession {
     const key = `${signal.from}:${signal.fromEpoch}:${signal.toEpoch}:${signal.negotiationId}`;
     let candidates = this.pendingIce.get(key);
     if (!candidates) {
-      while (this.pendingIce.size >= MAX_PENDING_NEGOTIATIONS) {
+      while (this.pendingIce.size >= RTC_POLICY.maxPendingNegotiations) {
         const oldest = this.pendingIce.keys().next().value as string | undefined;
         if (!oldest) break;
         this.pendingIce.delete(oldest);
@@ -589,10 +588,10 @@ export class WebRtcSession {
       candidates = [];
       this.pendingIce.set(key, candidates);
     }
-    if (candidates.length < MAX_PENDING_CANDIDATES) candidates.push(signal.payload);
+    if (candidates.length < RTC_POLICY.maxPendingCandidates) candidates.push(signal.payload);
     this.trace("ice", "ice.candidate.pending", "远端描述尚未就绪，暂存 ICE Candidate", {
-      details: { pendingCount: candidates.length, negotiation: negotiationTag(signal.negotiationId) },
-      dedupeKey: `candidate-pending-${negotiationTag(signal.negotiationId)}`,
+      details: { pendingCount: candidates.length, negotiation: shortId(signal.negotiationId) },
+      dedupeKey: `candidate-pending-${shortId(signal.negotiationId)}`,
     });
   }
 
@@ -667,7 +666,7 @@ export class WebRtcSession {
     ) return;
 
     this.phase = "full";
-    this.rejectedUntil = Date.now() + REJECT_BACKOFF_MS;
+    this.rejectedUntil = Date.now() + RTC_POLICY.rejectBackoffMs;
     this.enableAnnouncements(false);
     this.show("disconnected", "这个会话已经有两位成员", "无法加入：会话成员已锁定为两个人。");
     this.trace("hello", "hello.rejected", "当前页面被已有双人会话拒绝", {

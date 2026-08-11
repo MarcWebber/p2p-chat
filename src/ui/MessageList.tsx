@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { ChatMessage, ConnectionState } from "@/src/chat/types";
-import { formatTime } from "@/src/ui/formatters";
+import { formatMinuteTime } from "@/src/utils/format";
 
 type MessageListProps = {
   connection: ConnectionState;
@@ -44,7 +44,7 @@ export function MessageList({
           <article className={`message-row ${mine ? "mine" : "theirs"}`} key={message.id}>
             <div className="message-avatar">{mine ? "我" : "Ta"}</div>
             <div className="message-content">
-              <div className="message-meta"><span>{mine ? "我" : "对方"}</span><time>{formatTime(message.createdAt)}</time></div>
+              <div className="message-meta"><span>{mine ? "我" : "对方"}</span><time>{formatMinuteTime(message.createdAt)}</time></div>
               <div className={`message-bubble ${message.kind}`}>
                 {message.kind === "text" ? <p>{message.content}</p> : null}
                 {message.kind === "image" ? <img src={message.content} alt={message.fileName || "聊天图片"} /> : null}

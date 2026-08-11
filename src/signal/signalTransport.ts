@@ -1,5 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
+import { RESOURCE_NAMES, SIGNAL_POLICY } from "@/src/config/policy";
+import { PUBLIC_SIGNAL_CONFIG } from "@/src/config/publicRuntime";
 import {
   diagnosticErrorDetails,
   sanitizeDiagnosticText,
@@ -11,6 +13,7 @@ import {
   isSignalMessage,
   type SignalMessage,
 } from "@/src/signal/types";
+import { shortId } from "@/src/utils/format";
 
 type SignalTransportOptions = {
   roomId: string;
@@ -18,10 +21,6 @@ type SignalTransportOptions = {
   onStatus: (status: "subscribed" | "unavailable") => void;
   onDiagnostic: ConnectionDiagnosticSink;
 };
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-export const REMOTE_SIGNALING_ENABLED = Boolean(SUPABASE_URL && SUPABASE_KEY);
 
 const SIGNAL_STAGES = { hello: "hello", offer: "sdp", answer: "sdp", candidate: "ice", rejected: "signal" } as const;
 
@@ -47,7 +46,7 @@ function signalDiagnostic(
       restart: message.type === "hello" ? message.restart : undefined,
       localEpoch: message.fromEpoch,
       remoteEpoch: "toEpoch" in message ? message.toEpoch : undefined,
-      negotiation: "negotiationId" in message ? message.negotiationId.slice(-6) : undefined,
+      negotiation: "negotiationId" in message ? shortId(message.negotiationId) : undefined,
     },
     dedupeKey: dedupe ? `${local ? "local-" : ""}${message.type}-${direction}` : undefined,
   };
@@ -89,13 +88,14 @@ export function createSignalTransport({
     onMessage(value);
   };
 
-  if (SUPABASE_URL && SUPABASE_KEY) {
+  if (PUBLIC_SIGNAL_CONFIG.enabled) {
+    const { url, key } = PUBLIC_SIGNAL_CONFIG;
     let disposed = false;
     let firstHealthyHeartbeatSeen = false;
     const signalStartedAt = Date.now();
     const providerHost = (() => {
       try {
-        return new URL(SUPABASE_URL).host;
+        return new URL(url).host;
       } catch {
         return "invalid-host";
       }
@@ -106,7 +106,7 @@ export function createSignalTransport({
       message: "已创建 Supabase Realtime 信令传输",
       details: { provider: "supabase", providerHost },
     });
-    const client = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    const client = createClient(url, key, {
       auth: { persistSession: false },
       realtime: {
         // Keep heartbeats out of the throttled main thread when the chat tab is in the background.
@@ -148,10 +148,10 @@ export function createSignalTransport({
         },
       },
     });
-    const channel = client.channel(`twoonly:${roomId}`, {
+    const channel = client.channel(`${RESOURCE_NAMES.roomPrefix}${roomId}`, {
       config: { broadcast: { ack: true } },
     });
-    channel.on("broadcast", { event: "signal" }, ({ payload }) => receive(payload));
+    channel.on("broadcast", { event: SIGNAL_POLICY.realtimeEvent }, ({ payload }) => receive(payload));
 
     return {
       start() {
@@ -196,7 +196,7 @@ export function createSignalTransport({
         const sentAt = Date.now();
         onDiagnostic(signalDiagnostic(message, "sent"));
         void channel
-          .send({ type: "broadcast", event: "signal", payload: message })
+          .send({ type: "broadcast", event: SIGNAL_POLICY.realtimeEvent, payload: message })
           .then((result) => {
             onDiagnostic({
               stage,
@@ -237,7 +237,7 @@ export function createSignalTransport({
     };
   }
 
-  const channel = new BroadcastChannel(`twoonly-signal:${roomId}`);
+  const channel = new BroadcastChannel(`${RESOURCE_NAMES.localSignalPrefix}${roomId}`);
   channel.onmessage = (event: MessageEvent<unknown>) => receive(event.data, true);
   onDiagnostic({
     stage: "signal",

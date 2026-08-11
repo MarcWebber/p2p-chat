@@ -1,5 +1,5 @@
 import type { ChatMessage, ConnectionState } from "@/src/chat/types";
-import { formatTime } from "@/src/ui/formatters";
+import { formatMinuteTime } from "@/src/utils/format";
 
 type ChatSidebarProps = {
   messages: ChatMessage[];
@@ -34,7 +34,7 @@ export function ChatSidebar({ messages, connection, onCreateRoom, onClearHistory
         <div className="conversation-card active">
           <div className="conversation-avatar">2</div>
           <div className="conversation-copy">
-            <div><strong>双人聊天</strong><time>{lastMessage ? formatTime(lastMessage.createdAt) : ""}</time></div>
+            <div><strong>双人聊天</strong><time>{lastMessage ? formatMinuteTime(lastMessage.createdAt) : ""}</time></div>
             <small>{preview}</small>
           </div>
         </div>

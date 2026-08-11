@@ -1,4 +1,5 @@
 import type { LegacyRole } from "@/src/chat/types";
+import { ROOM_POLICY } from "@/src/config/policy";
 import { randomToken } from "@/src/crypto/messageCrypto";
 
 type RoomInvitation = {
@@ -22,9 +23,13 @@ export function readRoomInvitation(location: Location): RoomInvitation | null {
 
 export function createRoomInvitation(): RoomInvitation {
   return {
-    roomId: randomToken(9),
-    secret: randomToken(32),
+    roomId: randomToken(ROOM_POLICY.roomIdBytes),
+    secret: randomToken(ROOM_POLICY.secretBytes),
   };
+}
+
+export function createParticipantId() {
+  return `${ROOM_POLICY.participantIdPrefix}${randomToken(ROOM_POLICY.participantIdBytes)}`;
 }
 
 export function createRoomUrl(origin: string, invitation: RoomInvitation) {

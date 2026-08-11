@@ -1,6 +1,5 @@
 import type { EncryptedWire } from "@/src/chat/types";
-
-const CHUNK_SIZE = 12_000;
+import { CHAT_POLICY } from "@/src/config/policy";
 
 type ChunkPacket = {
   type: "chunk";
@@ -12,13 +11,16 @@ type ChunkPacket = {
 
 export function encodeEncryptedWire(wire: EncryptedWire) {
   const serialized = JSON.stringify(wire);
-  const total = Math.ceil(serialized.length / CHUNK_SIZE);
+  const total = Math.ceil(serialized.length / CHAT_POLICY.encryptedChunkCharacters);
   return Array.from({ length: total }, (_, index) => JSON.stringify({
     type: "chunk",
     id: wire.id,
     index,
     total,
-    data: serialized.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE),
+    data: serialized.slice(
+      index * CHAT_POLICY.encryptedChunkCharacters,
+      (index + 1) * CHAT_POLICY.encryptedChunkCharacters,
+    ),
   } satisfies ChunkPacket));
 }
 

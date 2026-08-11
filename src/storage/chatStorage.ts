@@ -1,9 +1,8 @@
 import type { EncryptedWire } from "@/src/chat/types";
+import { RESOURCE_NAMES, STORAGE_POLICY } from "@/src/config/policy";
 
-const MAX_STORED_MESSAGES = 200;
-
-function getMessageStorageKey(roomId: string) {
-  return `twoonly:${roomId}:messages`;
+function roomStorageKey(roomId: string, suffix: string) {
+  return `${RESOURCE_NAMES.roomPrefix}${roomId}:${suffix}`;
 }
 
 function loadArray(storage: Storage, key: string) {
@@ -16,7 +15,9 @@ function loadArray(storage: Storage, key: string) {
 }
 
 export function loadEncryptedHistory(roomId: string): EncryptedWire[] {
-  return roomId ? loadArray(localStorage, getMessageStorageKey(roomId)) as EncryptedWire[] : [];
+  return roomId
+    ? loadArray(localStorage, roomStorageKey(roomId, STORAGE_POLICY.messageHistorySuffix)) as EncryptedWire[]
+    : [];
 }
 
 export function persistEncryptedMessage(roomId: string, wire: EncryptedWire) {
@@ -24,8 +25,8 @@ export function persistEncryptedMessage(roomId: string, wire: EncryptedWire) {
     const existing = loadEncryptedHistory(roomId);
     if (!existing.some((item) => item.id === wire.id)) {
       localStorage.setItem(
-        getMessageStorageKey(roomId),
-        JSON.stringify([...existing, wire].slice(-MAX_STORED_MESSAGES)),
+        roomStorageKey(roomId, STORAGE_POLICY.messageHistorySuffix),
+        JSON.stringify([...existing, wire].slice(-STORAGE_POLICY.maxMessages)),
       );
     }
     return true;
@@ -35,15 +36,11 @@ export function persistEncryptedMessage(roomId: string, wire: EncryptedWire) {
 }
 
 export function clearEncryptedHistory(roomId: string) {
-  if (roomId) localStorage.removeItem(getMessageStorageKey(roomId));
-}
-
-function getSentMessageStorageKey(roomId: string) {
-  return `twoonly:${roomId}:sent-message-ids:v2`;
+  if (roomId) localStorage.removeItem(roomStorageKey(roomId, STORAGE_POLICY.messageHistorySuffix));
 }
 
 function loadSentMessageIds(roomId: string) {
-  return loadArray(sessionStorage, getSentMessageStorageKey(roomId))
+  return loadArray(sessionStorage, roomStorageKey(roomId, STORAGE_POLICY.sentMessageIdsSuffix))
     .filter((item): item is string => typeof item === "string");
 }
 
@@ -51,8 +48,8 @@ export function markMessageAsSent(roomId: string, messageId: string) {
   const existing = loadSentMessageIds(roomId);
   if (existing.includes(messageId)) return;
   sessionStorage.setItem(
-    getSentMessageStorageKey(roomId),
-    JSON.stringify([...existing, messageId].slice(-MAX_STORED_MESSAGES)),
+    roomStorageKey(roomId, STORAGE_POLICY.sentMessageIdsSuffix),
+    JSON.stringify([...existing, messageId].slice(-STORAGE_POLICY.maxSentMessageIds)),
   );
 }
 

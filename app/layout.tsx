@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
+
+import { SERVER_RUNTIME_CONFIG } from "@/src/config/serverRuntime";
+
 import "./globals.css";
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL
-  ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://twoonly-chat.vercel.app");
-
 export const metadata: Metadata = {
-  metadataBase: new URL(siteUrl),
+  metadataBase: new URL(SERVER_RUNTIME_CONFIG.siteUrl),
   title: "TwoOnly · 双人加密聊天",
   description: "只允许两个人加入，支持文字、图片和语音的加密聊天。",
   openGraph: {

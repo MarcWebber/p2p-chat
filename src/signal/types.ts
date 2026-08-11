@@ -1,7 +1,8 @@
-export const SIGNAL_PROTOCOL_VERSION = 2 as const;
+import { SIGNAL_POLICY, SIGNAL_REJECTION_REASON } from "@/src/config/policy";
+import { isRecord } from "@/src/utils/guards";
 
 type SignalBase = {
-  protocol: typeof SIGNAL_PROTOCOL_VERSION;
+  protocol: typeof SIGNAL_POLICY.protocolVersion;
   from: string;
   fromEpoch: number;
 };
@@ -38,7 +39,7 @@ type RejectedSignal = SignalBase & {
   type: "rejected";
   to: string;
   toEpoch: number;
-  reason: "room-full" | "protocol";
+  reason: typeof SIGNAL_REJECTION_REASON[keyof typeof SIGNAL_REJECTION_REASON];
 };
 
 export type SignalMessage =
@@ -56,7 +57,7 @@ function isPositiveEpoch(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
-function isBoundedId(value: unknown, maxLength = 128): value is string {
+function isBoundedId(value: unknown, maxLength = SIGNAL_POLICY.maxIdLength): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength;
 }
 
@@ -66,19 +67,19 @@ function hasValidTarget(signal: Record<string, unknown>) {
 }
 
 function isDescriptionPayload(value: unknown, type: "offer" | "answer") {
-  if (!value || typeof value !== "object") return false;
-  const description = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
+  const description = value;
   return description.type === type
     && typeof description.sdp === "string"
     && description.sdp.length > 0
-    && description.sdp.length <= 1_000_000;
+    && description.sdp.length <= SIGNAL_POLICY.maxSdpLength;
 }
 
 function isCandidatePayload(value: unknown) {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
+  const candidate = value;
   return typeof candidate.candidate === "string"
-    && candidate.candidate.length <= 8_192
+    && candidate.candidate.length <= SIGNAL_POLICY.maxCandidateLength
     && (candidate.sdpMid === undefined || candidate.sdpMid === null || typeof candidate.sdpMid === "string")
     && (
       candidate.sdpMLineIndex === undefined
@@ -93,10 +94,10 @@ function isCandidatePayload(value: unknown) {
 }
 
 export function isSignalMessage(value: unknown): value is SignalMessage {
-  if (!value || typeof value !== "object") return false;
-  const signal = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
+  const signal = value;
   if (
-    signal.protocol !== SIGNAL_PROTOCOL_VERSION
+    signal.protocol !== SIGNAL_POLICY.protocolVersion
     || !isBoundedId(signal.from)
     || !isPositiveEpoch(signal.fromEpoch)
   ) return false;
@@ -109,7 +110,8 @@ export function isSignalMessage(value: unknown): value is SignalMessage {
 
   if (signal.type === "rejected") {
     return hasValidTarget(signal)
-      && (signal.reason === "room-full" || signal.reason === "protocol");
+      && (signal.reason === SIGNAL_REJECTION_REASON.roomFull
+        || signal.reason === SIGNAL_REJECTION_REASON.protocol);
   }
 
   if (signal.type !== "offer" && signal.type !== "answer" && signal.type !== "candidate") {
@@ -123,8 +125,8 @@ export function isSignalMessage(value: unknown): value is SignalMessage {
 }
 
 export function isLegacySignalMessage(value: unknown) {
-  if (!value || typeof value !== "object") return false;
-  const signal = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
+  const signal = value;
   return signal.protocol === undefined
     && isBoundedId(signal.from)
     && (signal.type === "hello"

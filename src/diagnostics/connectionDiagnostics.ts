@@ -1,3 +1,7 @@
+import { DIAGNOSTICS_POLICY } from "@/src/config/policy";
+import { formatMillisecondTime } from "@/src/utils/format";
+import { createTraceId } from "@/src/utils/ids";
+
 export type DiagnosticStage =
   | "client"
   | "credentials"
@@ -35,9 +39,6 @@ type ConnectionDiagnosticsSnapshot = {
 
 export type ConnectionDiagnosticSink = (event: ConnectionDiagnosticEvent) => void;
 
-const MAX_ENTRIES = 200;
-const NOTIFY_DELAY_MS = 120;
-const DEDUPE_WINDOW_MS = 30_000;
 const SENSITIVE_DETAIL_KEY = /^(?:secret|credential|password|token|authorization|sdp|candidate|roomId|senderId|participantId|peerId|apiKey)$/i;
 
 export function sanitizeDiagnosticText(value: unknown) {
@@ -55,7 +56,7 @@ export function sanitizeDiagnosticText(value: unknown) {
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[redacted-ip]")
     .replace(/\b(?:[a-f0-9]{1,4}:){2,}[a-f0-9:]+\b/gi, "[redacted-ip]")
     .replace(/[A-Za-z0-9_-]{48,}/g, "[redacted]")
-    .slice(0, 280);
+    .slice(0, DIAGNOSTICS_POLICY.maxTextLength);
 }
 
 export function diagnosticErrorDetails(error: unknown) {
@@ -86,14 +87,6 @@ function sanitizeDetails(details: ConnectionDiagnosticEvent["details"]) {
   return Object.keys(safe).length ? safe : undefined;
 }
 
-const formatConsoleTime = new Intl.DateTimeFormat("zh-CN", {
-  hour12: false,
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  fractionalSecondDigits: 3,
-}).format;
-
 export class ConnectionDiagnostics {
   readonly traceId: string;
 
@@ -105,8 +98,7 @@ export class ConnectionDiagnostics {
   private snapshot: ConnectionDiagnosticsSnapshot = { revision: 0, entries: [] };
 
   constructor() {
-    this.traceId = globalThis.crypto?.randomUUID?.().slice(0, 8)
-      ?? Math.random().toString(36).slice(2, 10);
+    this.traceId = createTraceId();
   }
 
   report: ConnectionDiagnosticSink = (event) => {
@@ -131,14 +123,14 @@ export class ConnectionDiagnostics {
         ? console.warn
         : console.info;
     consoleMethod(
-      `[twoonly][${this.traceId}][${formatConsoleTime(timestamp)}][${entry.stage}][${entry.code}] ${entry.message}`,
+      `[twoonly][${this.traceId}][${formatMillisecondTime(timestamp)}][${entry.stage}][${entry.code}] ${entry.message}`,
       details ?? "",
     );
 
     if (event.dedupeKey) {
       const duplicateIndex = this.entries.findLastIndex((item) =>
         item.dedupeKey === event.dedupeKey
-        && timestamp - item.timestamp <= DEDUPE_WINDOW_MS,
+        && timestamp - item.timestamp <= DIAGNOSTICS_POLICY.dedupeWindowMs,
       );
       if (duplicateIndex >= 0) {
         const previous = this.entries.splice(duplicateIndex, 1)[0];
@@ -147,12 +139,14 @@ export class ConnectionDiagnostics {
     }
 
     this.entries.push(entry);
-    if (this.entries.length > MAX_ENTRIES) this.entries.splice(0, this.entries.length - MAX_ENTRIES);
+    if (this.entries.length > DIAGNOSTICS_POLICY.maxEntries) {
+      this.entries.splice(0, this.entries.length - DIAGNOSTICS_POLICY.maxEntries);
+    }
     if (this.notifyTimer === undefined) {
       this.notifyTimer = setTimeout(() => {
         this.notifyTimer = undefined;
         this.publish();
-      }, NOTIFY_DELAY_MS);
+      }, DIAGNOSTICS_POLICY.notifyDelayMs);
     }
   };
 

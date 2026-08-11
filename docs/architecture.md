@@ -58,18 +58,30 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 
 | 模块 | 职责 | 不负责 |
 | --- | --- | --- |
+| `src/config` | 产品策略、公开环境配置、服务端环境配置 | 业务流程、网络请求、UI 状态 |
 | `src/chat` | 领域类型、React 状态和用例编排 | WebRTC/Supabase 的底层细节 |
 | `src/crypto` | 随机值、安全码、AES-GCM 加解密 | 保存历史、发送网络消息 |
 | `src/diagnostics` | 建连日志、脱敏、内存环形缓冲和 Console 输出 | 持久化日志、记录密钥或消息内容 |
 | `src/signal` | 信令类型校验、Supabase/BroadcastChannel 适配 | 聊天正文、PeerConnection 生命周期 |
-| `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和密文分片传输 | React UI、本地历史 |
+| `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和 ICE Server 规范化 | React UI、本地历史 |
 | `src/storage` | `localStorage` 密文历史、`sessionStorage` 本标签发送消息 ID | 加解密、Supabase Database/Storage |
 | `src/room` | 无角色邀请链接的解析、生成与旧链接兼容 | 连接状态机 |
-| `src/media` | 文件 Data URL、文件限制、录音生命周期 | 消息加密和发送 |
+| `src/media` | 录音生命周期 | 消息加密、通用浏览器文件转换 |
 | `src/protocol` | 密文信封的分片编码、重组和协议格式 | 网络连接、明文消息 |
 | `src/ui` | 首页、聊天页和展示组件 | 直接访问 Supabase、WebRTC 或浏览器存储 |
+| `src/utils` | 剪贴板、Data URL、时间/容量格式、短 ID 和通用类型守卫 | 领域状态、网络策略、服务端秘密 |
 
 这里特别需要区分：Supabase 当前只提供 Realtime Broadcast 信令，不保存聊天消息，因此它属于 `signal`，不是 `storage`。`storage` 只封装当前浏览器内的持久化。
+
+### 配置边界
+
+配置分为三层，避免业务代码直接散读环境变量：
+
+- `config/policy.ts` 是环境无关的产品策略，集中保存附件上限、存储容量、协议版本、RTC 超时、Candidate 缓存上限和资源命名；
+- `config/publicRuntime.ts` 只解析 `NEXT_PUBLIC_*`，生成可进入浏览器包的 Supabase 与静态 ICE 配置；
+- `config/serverRuntime.ts` 以 `server-only` 标记，保存站点地址、Cloudflare TURN Key/Token、TTL 和服务商超时。客户端模块一旦误引入它，Next.js 会在构建期报错。
+
+配置只描述值和环境，不执行握手或请求。通用行为放在 `utils`，ICE 领域行为放在 `webrtc/iceServers.ts`。例如服务端 TURN Route 与浏览器凭据解析现在共用 `normalizeIceServer` / `hasTurnServer`，不会再各维护一套校验规则。
 
 ## 3. 邀请链接与页面身份
 
@@ -101,7 +113,7 @@ https://站点/?room=<roomId>#<secret>
 
 第三个页面广播 Hello 时，两个已连接页面都会因为 peer lock 已被占用而回复 `rejected(room-full)`。DataChannel 已打开时不会因超时让位；只有通道没有打开，并且旧 Peer 已明确失败/关闭，或连续 10 秒没有旧 peer 信令时，锁才允许新的页面实例接替。这是一种运行时恢复策略，不是服务端成员认证。
 
-这能满足临时双人房间的 MVP 需求，但有三个明确限制：
+这能满足临时双人房间的 MVP 需求，但有四个明确限制：
 
 1. 锁分别存在两个页面的内存中；页面全部关闭后没有持久成员席位。
 2. 没有账号或公钥身份，拿到完整链接并先完成互锁的页面占用位置。
@@ -140,6 +152,10 @@ twoonly/
 ├── components/
 │   └── TwoOnlyApp.tsx              # 客户端入口与首页/聊天页分流
 ├── src/
+│   ├── config/
+│   │   ├── policy.ts              # 产品限制、协议与 RTC 策略
+│   │   ├── publicRuntime.ts       # NEXT_PUBLIC 环境配置
+│   │   └── serverRuntime.ts       # server-only 站点与 TURN 配置
 │   ├── chat/
 │   │   ├── types.ts                # 聊天领域类型
 │   │   └── useTwoOnlyChat.ts       # 状态与用例协调器
@@ -148,7 +164,6 @@ twoonly/
 │   ├── diagnostics/
 │   │   └── connectionDiagnostics.ts # 脱敏建连日志与内存缓冲
 │   ├── media/
-│   │   ├── files.ts                # 文件限制与 Data URL
 │   │   └── useAudioRecorder.ts     # 录音生命周期
 │   ├── protocol/
 │   │   └── wireProtocol.ts         # 密文分片编码与重组
@@ -166,11 +181,16 @@ twoonly/
 │   │   ├── ConnectionDiagnosticsPanel.tsx # 六阶段连接诊断面板
 │   │   ├── ChatSidebar.tsx         # 当前会话摘要
 │   │   ├── MessageList.tsx         # 消息展示
-│   │   ├── MessageComposer.tsx     # 文字/图片/语音输入
-│   │   └── formatters.ts           # UI 格式化
+│   │   └── MessageComposer.tsx     # 文字/图片/语音输入
+│   ├── utils/
+│   │   ├── browser.ts              # 剪贴板与 Data URL
+│   │   ├── format.ts               # 时间、容量与短 ID 格式
+│   │   ├── guards.ts               # 通用运行时类型守卫
+│   │   └── ids.ts                  # Trace ID
 │   └── webrtc/
 │       ├── WebRtcSession.ts        # Peer、握手、重连状态机
 │       ├── iceConfig.ts            # STUN/TURN 配置
+│       ├── iceServers.ts           # ICE Server 校验与摘要
 │       └── rtcStats.ts             # Candidate 摘要与选中路径统计
 ├── docs/
 │   ├── README.md                   # 文档索引
@@ -200,7 +220,19 @@ twoonly/
 
 ```mermaid
 flowchart TD
-  UI["UI"] --> CHAT["Chat Controller"]
+  CONFIG["Config Policy"] --> CHAT["Chat Controller"]
+  CONFIG --> SIGNAL["Signal Transport"]
+  CONFIG --> WEBRTC["WebRTC Session"]
+  CONFIG --> UI["UI"]
+  CONFIG --> ROOM["Room"]
+  CONFIG --> STORAGE["Storage"]
+  CONFIG --> MEDIA["Media"]
+  CONFIG --> PROTOCOL["Wire Protocol"]
+  UTILS["Shared Utils"] --> CHAT
+  UTILS --> WEBRTC
+  UTILS --> SIGNAL
+  UTILS --> UI
+  UI --> CHAT
   CHAT --> ROOM["Room"]
   CHAT --> CRYPTO["Crypto"]
   CHAT --> STORAGE["Storage"]
@@ -214,6 +246,9 @@ flowchart TD
 后续开发应保持以下边界：
 
 - UI 只能调用控制器暴露的状态和动作，不直接操作 `RTCPeerConnection`、Supabase 或浏览器存储；
+- 业务模块不直接读取 `process.env`；公开变量只能进入 `publicRuntime.ts`，长期 Token 只能进入 `serverRuntime.ts`；
+- `policy.ts` 只保存跨模块策略与协议值，组件独有文案和展示映射留在组件附近，防止配置文件变成新的杂物间；
+- `utils` 只接收普通参数并返回结果，不反向依赖 Chat、Signal 或 WebRTC 状态机；
 - Signal 只传递并校验信令结构，不依赖具体 UI；
 - WebRTC 只传输 `EncryptedWire`，不持有 AES 密钥或明文消息；
 - Storage 只保存密文信封，不自行加解密；
