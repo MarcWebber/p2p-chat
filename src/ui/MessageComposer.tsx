@@ -1,7 +1,15 @@
-import type { ChangeEventHandler, FormEventHandler } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEventHandler,
+  type FormEventHandler,
+  type KeyboardEvent,
+} from "react";
 
 import type { ConnectionState } from "@/src/chat/types";
 import { CHAT_POLICY } from "@/src/config/policy";
+import { ExpressionPicker } from "@/src/ui/ExpressionPicker";
 import { formatBytes } from "@/src/utils/format";
 
 type MessageComposerProps = {
@@ -11,6 +19,7 @@ type MessageComposerProps = {
   onDraftChange: (draft: string) => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
   onChooseImage: ChangeEventHandler<HTMLInputElement>;
+  onSendSticker: (src: string, label: string) => Promise<boolean>;
   onStartRecording: () => void;
   onStopRecording: () => void;
 };
@@ -22,15 +31,65 @@ export function MessageComposer({
   onDraftChange,
   onSubmit,
   onChooseImage,
+  onSendSticker,
   onStartRecording,
   onStopRecording,
 }: MessageComposerProps) {
   const connected = connection === "connected";
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!connected) setPickerOpen(false);
+  }, [connected]);
+
+  const insertExpression = (value: string) => {
+    const start = inputRef.current?.selectionStart ?? draft.length;
+    const end = inputRef.current?.selectionEnd ?? draft.length;
+    onDraftChange(`${draft.slice(0, start)}${value}${draft.slice(end)}`);
+    requestAnimationFrame(() => {
+      const cursor = start + value.length;
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === "Space") {
+      event.preventDefault();
+      setPickerOpen((current) => !current);
+    } else if (event.key === "Escape" && pickerOpen) {
+      setPickerOpen(false);
+    }
+  };
+
+  const handleSubmit: FormEventHandler<HTMLFormElement> = (event) => {
+    setPickerOpen(false);
+    onSubmit(event);
+  };
 
   return (
     <>
-      <form className="composer" onSubmit={onSubmit}>
+      <form className="composer" onSubmit={handleSubmit}>
+        <ExpressionPicker
+          open={pickerOpen && connected}
+          onClose={() => setPickerOpen(false)}
+          onInsertText={insertExpression}
+          onSendSticker={onSendSticker}
+        />
         <div className="composer-tools">
+          <button
+            type="button"
+            className={`tool-button ${pickerOpen ? "active" : ""}`}
+            onClick={() => setPickerOpen((current) => !current)}
+            aria-label="选择表情、颜文字或表情包"
+            aria-expanded={pickerOpen}
+            aria-controls="expression-picker"
+            title="表情与颜文字（Ctrl/⌘ + Shift + 空格）"
+            disabled={!connected}
+          >
+            <span aria-hidden>☺</span><span className="tool-label">表情</span>
+          </button>
           <label className={`tool-button ${connected ? "" : "disabled"}`} title="发送图片">
             <span aria-hidden>▧</span><span className="tool-label">图片</span>
             <input type="file" accept="image/*" onChange={onChooseImage} disabled={!connected} />
@@ -47,9 +106,11 @@ export function MessageComposer({
           </button>
         </div>
         <input
+          ref={inputRef}
           className="message-input"
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={handleInputKeyDown}
           placeholder={connected ? "输入消息" : "连接后即可发送"}
           aria-label="消息内容"
           disabled={!connected}
@@ -58,7 +119,7 @@ export function MessageComposer({
       </form>
       <p className="composer-hint">
         {connected
-          ? `消息已加密保存在本机 · 图片/语音上限 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)}`
+          ? `支持表情、颜文字和图片表情包 · 图片/语音上限 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)}`
           : "等待安全连接建立后即可发送"}
       </p>
     </>

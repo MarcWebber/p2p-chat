@@ -23,6 +23,8 @@
 - WebRTC 点对点数据通道
 - AES-GCM 应用层二次加密和安全码
 - 文字、1.5 MB 以内图片、语音消息
+- 10 类 Unicode 表情、15 类颜文字和 4 类图片表情包；颜文字可按“常用 / 开心 / 问候 / 可爱 / 情绪 / 动作”等多层目录选择
+- 消息框继续支持 `Win + .`、Fn/🌐 等系统原生表情面板，并提供 `Ctrl/⌘ + Shift + 空格` 打开应用内面板
 - 大消息分片传输
 - 保存完整房间凭证，重新打开首页时自动恢复最近会话
 - 侧栏列出本机以前的聊天，可切换或清空当前记录
@@ -72,6 +74,10 @@ NEXT_PUBLIC_SITE_URL=https://your-domain.example
 ```
 
 Next.js 构建命令和输出目录使用 Vercel 默认值即可。
+
+## 表情素材
+
+图片表情包选用 Microsoft Fluent Emoji 的 3D PNG，并随项目静态部署，发送时不依赖第三方图片服务。原始素材采用 MIT License，授权文本保存在 [`public/stickers/fluent/LICENSE.txt`](public/stickers/fluent/LICENSE.txt)，上游项目为 [microsoft/fluentui-emoji](https://github.com/microsoft/fluentui-emoji)。
 
 ## 当前 MVP 边界
 

@@ -404,6 +404,27 @@ export function useTwoOnlyChat() {
     await sendMessage("image", content, file.name);
   };
 
+  const sendSticker = async (src: string, label: string) => {
+    const activeCrypto = messageCryptoRef.current;
+    if (!activeCrypto) return false;
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error(`sticker ${response.status}`);
+      const blob = await response.blob();
+      if (blob.size > CHAT_POLICY.maxAttachmentBytes) {
+        setNotice("这个表情包文件过大，无法发送。");
+        return false;
+      }
+      const content = await readAsDataUrl(blob);
+      if (messageCryptoRef.current !== activeCrypto) return false;
+      await sendMessage("image", content, `${label}.png`);
+      return true;
+    } catch {
+      setNotice("表情包加载失败，请重试。");
+      return false;
+    }
+  };
+
   const copyInvite = async () => {
     try {
       if (!await copyText(inviteUrl)) throw new Error("copy failed");
@@ -453,6 +474,7 @@ export function useTwoOnlyChat() {
     openStoredRoom,
     submitText,
     chooseImage,
+    sendSticker,
     startRecording,
     stopRecording,
     copyInvite,
