@@ -12,7 +12,7 @@ flowchart LR
     AUI["聊天 UI"]
     AC["AES-GCM 加密/解密"]
     AP["RTCPeerConnection + DataChannel"]
-    AL["localStorage 密文历史"]
+    AL["IndexedDB 房间与密文历史"]
     AUI --> AC
     AC --> AP
     AC --> AL
@@ -30,7 +30,7 @@ flowchart LR
     BP["RTCPeerConnection + DataChannel"]
     BC["AES-GCM 加密/解密"]
     BUI["聊天 UI"]
-    BL["localStorage 密文历史"]
+    BL["IndexedDB 房间与密文历史"]
     BP --> BC
     BC --> BUI
     BC --> BL
@@ -70,8 +70,8 @@ Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时
 | `src/signal` | 信令校验、Supabase/HTTPS 适配、双发去重和短时 Redis Stream | 聊天正文、PeerConnection 生命周期 |
 | `src/server` | Route Handler 共用的同源请求校验 | 浏览器状态、房间密钥 |
 | `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和 ICE Server 规范化 | React UI、本地历史 |
-| `src/storage` | `localStorage` 密文历史、`sessionStorage` 本标签发送消息 ID | 加解密、Supabase Database/Storage |
-| `src/room` | 无角色邀请链接的解析、生成与旧链接兼容 | 连接状态机 |
+| `src/storage` | IndexedDB 房间目录、密文历史与本机消息方向 | 加解密、Supabase Database/Storage |
+| `src/room` | 无角色邀请链接的解析与生成 | 连接状态机 |
 | `src/media` | 录音生命周期 | 消息加密、通用浏览器文件转换 |
 | `src/protocol` | 密文信封的分片编码、重组和协议格式 | 网络连接、明文消息 |
 | `src/ui` | 首页、聊天页和展示组件 | 直接访问 Supabase、WebRTC 或浏览器存储 |
@@ -109,7 +109,7 @@ https://站点/?room=<roomId>#<secret>
 - 两端显示从同一 `secret` 计算出的安全码，用户可通过另一个可信渠道核对。
 - 每次页面加载都会生成新的随机 `participantId`。它用于本次页面的信令寻址和 Offer 发起方选举，不是账号或长期设备身份。
 
-旧版曾生成 `?room=<roomId>&role=host#<secret>` 与 `role=guest` 链接。v2 仍会解析这两种链接以恢复已有本地历史，但 `role` 只作为旧消息方向迁移提示，不再决定谁发送 Offer 或创建 DataChannel；新复制的链接不再包含该参数。
+解析器只读取 `room` 和 fragment 中的 `secret`。URL 中的其他参数不会进入邀请对象，也不会影响谁发送 Offer、创建 DataChannel 或恢复消息方向。
 
 ## 4. “只允许两个人”的实现
 
@@ -137,13 +137,13 @@ https://站点/?room=<roomId>#<secret>
 - 未完成消息分片、输入框和当前消息列表；
 - 连接模式和提示状态。
 
-聊天控制器只保存一份邀请状态：`undefined` 表示浏览器端还没有完成 URL 解析，`null` 表示当前是首页，包含 `roomId / secret / legacyRole` 的对象表示已经进入聊天页。`roomId`、会话秘密和旧链接迁移提示都从这份对象派生，不再用四组可以短暂失配的 React state 表示同一事实。客户端入口直接根据这三个状态渲染空壳、首页或聊天页。
+聊天控制器只保存一份邀请状态：`undefined` 表示浏览器端还没有完成 URL 解析，`null` 表示当前是首页，包含 `roomId / secret` 的对象表示已经进入聊天页。`roomId` 和会话秘密都从这份对象派生，不再用多组可以短暂失配的 React state 表示同一事实。客户端入口直接根据这三个状态渲染空壳、首页或聊天页。
 
 `WebRtcSession` 现在使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。实例创建后已经具备发现能力，信令就绪才启动 Hello 定时器，因此不再保留没有独立行为的 `idle` 和空 `start()`。对端身份收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连或换届时通过一个入口清理 Peer、协商和 Candidate 缓存。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
 
 诊断日志统一经过 `trace(stage, code, message, options)`，连接状态和用户提示统一经过 `show(...)`。这两个入口保留了完整排障证据链，但删除了散落在主流程里的重复日志对象。Candidate 解析和最终 Candidate Pair 统计移到纯函数模块 `rtcStats.ts`，不再挤占会话状态机。
 
-聊天消息中的 `author` 使用 `self / peer`，只表达当前标签页的 UI 方向。每次发送时，本标签页把消息 ID 追加到 `sessionStorage` 的 `twoonly:<roomId>:sent-message-ids:v2`；刷新后先解密 `localStorage` 历史，再用这份 ID 列表恢复“我/对方”。旧版密文里的 `host / guest` author 仍能借助旧 URL role 提示迁移读取，但不会再写入新消息。Storage 模块同时拥有密文历史的读取、去重、容量裁剪和写入异常边界；控制器只根据成功/失败结果决定是否提示用户，不再重复包一层 `try/catch`。
+聊天消息中的 `author` 使用 `self / peer`，只表达本机 UI 方向。方向元数据随密文写入 IndexedDB，刷新或关闭标签页后仍可恢复。存储层只读取当前 IndexedDB 结构；无效记录会明确失败，不再回退到旧存储或猜测消息方向。
 
 ## 6. 文件结构
 

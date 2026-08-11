@@ -1,8 +1,14 @@
 type LandingScreenProps = {
+  notice: string;
   onCreateRoom: () => void;
+  onClearNotice: () => void;
 };
 
-export function LandingScreen({ onCreateRoom }: LandingScreenProps) {
+export function LandingScreen({
+  notice,
+  onCreateRoom,
+  onClearNotice,
+}: LandingScreenProps) {
   return (
     <main className="landing-shell">
       <header className="landing-header">
@@ -21,6 +27,12 @@ export function LandingScreen({ onCreateRoom }: LandingScreenProps) {
             <span>图片和语音</span>
           </div>
           <p className="prototype-note">跨设备连接 · 双路加密信令</p>
+          {notice ? (
+            <div className="landing-notice" role="status">
+              <span>{notice}</span>
+              <button onClick={onClearNotice} aria-label="关闭提示">×</button>
+            </div>
+          ) : null}
         </section>
 
         <section className="wiki-card" aria-labelledby="wiki-title">

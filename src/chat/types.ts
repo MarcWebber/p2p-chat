@@ -2,9 +2,7 @@ export type ConnectionState = "waiting" | "connecting" | "connected" | "disconne
 
 export type MessageKind = "text" | "image" | "audio";
 
-type MessageAuthor = "self" | "peer";
-
-export type LegacyRole = "host" | "guest";
+export type MessageAuthor = "self" | "peer";
 
 export type ChatMessage = {
   id: string;
@@ -15,12 +13,13 @@ export type ChatMessage = {
   fileName?: string;
 };
 
-export type DecryptedChatMessage = Omit<ChatMessage, "author"> & {
-  author: MessageAuthor | LegacyRole;
-};
-
 export type EncryptedWire = {
   id: string;
   iv: string;
   data: string;
+};
+
+export type ConversationSummary = {
+  roomId: string;
+  lastOpenedAt: number;
 };

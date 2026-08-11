@@ -10,13 +10,6 @@ export const CHAT_POLICY = {
   encryptedChunkCharacters: 12_000,
 } as const;
 
-export const STORAGE_POLICY = {
-  maxMessages: 200,
-  maxSentMessageIds: 200,
-  messageHistorySuffix: "messages",
-  sentMessageIdsSuffix: "sent-message-ids:v2",
-} as const;
-
 export const DIAGNOSTICS_POLICY = {
   maxEntries: 200,
   visibleEntries: 60,
@@ -52,7 +45,6 @@ export const SIGNAL_POLICY = {
 
 export const SIGNAL_REJECTION_REASON = {
   roomFull: "room-full",
-  protocol: "protocol",
 } as const;
 
 export const RTC_POLICY = {

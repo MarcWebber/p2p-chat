@@ -9,10 +9,13 @@ export function ChatScreen(props: TwoOnlyChatController) {
   return (
     <main className="chat-shell">
       <ChatSidebar
+        conversations={props.conversations}
+        activeRoomId={props.activeRoomId}
         messages={props.messages}
         connection={props.connection}
         onCreateRoom={props.createFreshRoom}
         onClearHistory={props.clearLocalHistory}
+        onOpenRoom={props.openStoredRoom}
       />
       <section className="chat-main">
         <ChatHeader
@@ -23,6 +26,9 @@ export function ChatScreen(props: TwoOnlyChatController) {
           onCopyInvite={props.copyInvite}
           onReconnect={props.reconnect}
           onCreateRoom={props.createFreshRoom}
+          conversations={props.conversations}
+          activeRoomId={props.activeRoomId}
+          onOpenRoom={props.openStoredRoom}
         />
         <ConnectionDiagnosticsPanel diagnostics={props.diagnostics} />
         <MessageList

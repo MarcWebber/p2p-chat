@@ -8,7 +8,6 @@ import {
 import { createHttpsSignalTransport } from "@/src/signal/httpsSignalTransport";
 import { createSupabaseSignalTransport } from "@/src/signal/supabaseSignalTransport";
 import {
-  isLegacySignalMessage,
   isSignalMessage,
   type RoutedSignalMessage,
   type SignalMessage,
@@ -113,16 +112,13 @@ export function createSignalTransport({
 
   const receive = (provider: SignalProviderName, value: unknown) => {
     if (!isSignalMessage(value)) {
-      const legacy = isLegacySignalMessage(value);
       onDiagnostic({
         stage: "signal",
-        code: legacy ? "signal.protocol.legacy" : "signal.message.invalid",
-        level: legacy ? "error" : "warn",
-        message: legacy
-          ? "检测到旧版信令，请让双方刷新页面后重试"
-          : "忽略了一条格式无效的信令消息",
+        code: "signal.message.invalid",
+        level: "warn",
+        message: "忽略了一条格式无效的信令消息",
         details: { provider },
-        dedupeKey: legacy ? "legacy-signal" : `invalid-signal-${provider}`,
+        dedupeKey: `invalid-signal-${provider}`,
       });
       return;
     }

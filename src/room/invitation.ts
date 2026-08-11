@@ -1,11 +1,9 @@
-import type { LegacyRole } from "@/src/chat/types";
 import { ROOM_POLICY } from "@/src/config/policy";
 import { randomToken } from "@/src/crypto/messageCrypto";
 
-type RoomInvitation = {
+export type RoomInvitation = {
   roomId: string;
   secret: string;
-  legacyRole?: LegacyRole;
 };
 
 export function readRoomInvitation(location: Location): RoomInvitation | null {
@@ -13,12 +11,7 @@ export function readRoomInvitation(location: Location): RoomInvitation | null {
   const roomId = params.get("room") ?? "";
   const secret = location.hash.slice(1);
   if (!roomId || !secret) return null;
-  const role = params.get("role");
-  return {
-    roomId,
-    secret,
-    ...(role === "host" || role === "guest" ? { legacyRole: role } : {}),
-  };
+  return { roomId, secret };
 }
 
 export function createRoomInvitation(): RoomInvitation {

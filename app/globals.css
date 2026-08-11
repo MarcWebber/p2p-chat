@@ -21,9 +21,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible, label:focus-within {
+button:focus-visible, input:focus-visible, select:focus-visible, label:focus-within {
   outline: 2px solid rgba(22, 140, 255, 0.42);
   outline-offset: 2px;
 }
@@ -108,6 +108,9 @@ button:focus-visible, input:focus-visible, label:focus-within {
   font-weight: 600;
 }
 .primary-button:hover { background: var(--blue-dark); transform: translateY(-1px); }
+
+.landing-notice { margin-top: 14px; padding: 8px 9px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-radius: 8px; color: #6f7b87; background: #f2f6fa; font-size: 10px; text-align: left; }
+.landing-notice button { border: 0; background: none; cursor: pointer; color: #929ba4; }
 
 .start-features {
   margin-top: 24px;
@@ -225,15 +228,10 @@ button:focus-visible, input:focus-visible, label:focus-within {
   font-size: 11px;
 }
 .sidebar-top button:hover { color: var(--blue-dark); background: var(--blue-soft); }
-.conversation-card {
-  margin: 0 8px;
-  padding: 11px 10px;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  border-radius: 9px;
-}
+.conversation-list { min-height: 0; padding-bottom: 8px; display: grid; gap: 3px; overflow-y: auto; }
+.conversation-card { margin: 0 8px; display: flex; align-items: center; border-radius: 9px; }
 .conversation-card.active { background: #dfeeff; }
+.conversation-open { min-width: 0; padding: 11px 10px; display: flex; align-items: center; gap: 11px; flex: 1; border: 0; background: none; cursor: pointer; text-align: left; }
 .conversation-avatar {
   width: 44px;
   height: 44px;
@@ -246,7 +244,7 @@ button:focus-visible, input:focus-visible, label:focus-within {
   font-weight: 800;
 }
 .conversation-copy { min-width: 0; flex: 1; }
-.conversation-copy > div { display: flex; justify-content: space-between; gap: 8px; }
+.conversation-copy > span { display: flex; justify-content: space-between; gap: 8px; }
 .conversation-copy strong { font-size: 13px; }
 .conversation-copy time { color: #a1a9b2; font-size: 10px; }
 .conversation-copy small {
@@ -315,6 +313,7 @@ button:focus-visible, input:focus-visible, label:focus-within {
 }
 .invite-button:hover { background: var(--blue-dark); }
 .mobile-new-button { display: none; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: white; cursor: pointer; color: #65717d; font-size: 10px; }
+.mobile-room-select { display: none; min-width: 0; max-width: 130px; height: 30px; border: 1px solid var(--line); border-radius: 7px; color: #65717d; background: white; font-size: 10px; }
 
 .message-list {
   min-height: 0;
@@ -527,6 +526,7 @@ button:focus-visible, input:focus-visible, label:focus-within {
   .chat-shell { grid-template-columns: 54px minmax(0, 1fr); }
   .app-rail { width: 54px; }
   .chat-sidebar { display: none; }
+  .mobile-room-select { display: block; }
   .message-list { padding: 22px 16px; }
   .safety-code { display: none; }
   .message-row { max-width: 88%; }

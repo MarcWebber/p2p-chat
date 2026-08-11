@@ -134,13 +134,13 @@ v1 的创建页地址带 `role=host`，复制按钮生成 `role=guest`。这套�
 
 v2 把这层角色彻底拿掉：
 
-- 新链接统一为 `?room=<id>#<secret>`；旧 role 链接仍可解析，但参数只帮助迁移旧消息方向；
+- 新链接统一为 `?room=<id>#<secret>`；当前邀请状态不再保存 role 字段；
 - 每次页面加载生成随机 `participantId`，双方订阅成功后都广播 protocol v2 Hello；
 - 两端比较 participant ID 字符串，较小者只是本轮临时 Offer/DataChannel 发起方；通道打开后双方完全对等；
 - local/remote epoch 区分重连轮次，`negotiationId` 区分具体协商；Answer 和 Candidate 必须同时匹配这些字段；
 - 早到的 Candidate 按参与者、epoch 和 negotiation ID 分桶，远端描述就绪后只冲刷当前桶；
 - 两端都持有运行时 peer lock，已有会话会拒绝第三页，但这仍不是服务端身份或持久席位；
-- 消息 UI 改用 `self / peer`。每个标签页在 `sessionStorage` 记录自己发送过的消息 ID，用于刷新后恢复“我/对方”；旧 `host / guest` author 继续兼容读取。
+- 消息 UI 改用 `self / peer`，方向随密文记录保存在 IndexedDB，不再保留旧消息方向兼容路径。
 
 这个改动带来的最大收益不是少了一个 URL 参数，而是让“谁先发 Offer”从长期身份降级为一次协商里的确定性临时职责。排障时也不再问“哪边是 Host”，而是看两端 Hello、`peer.elected`、epoch 和 negotiation ID 是否一致。
 

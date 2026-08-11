@@ -1,6 +1,6 @@
 # TwoOnly 技术文档
 
-TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建并部署到 Vercel；Supabase Realtime 与同源 Vercel HTTPS 共同交换 WebRTC 建连信令；文字、图片和语音经浏览器本地 AES-GCM 加密后，通过 WebRTC DataChannel 传输，并以密文保存在各自设备的 `localStorage`。
+TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建并部署到 Vercel；Supabase Realtime 与同源 Vercel HTTPS 共同交换 WebRTC 建连信令；文字、图片和语音经浏览器本地 AES-GCM 加密后，通过 WebRTC DataChannel 传输，并以密文保存在各自设备的 IndexedDB。
 
 ## 推荐阅读顺序
 
@@ -38,7 +38,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 | 信令 | Supabase Realtime Broadcast + Vercel `/api/signal` HTTPS 短轮询；任意一条可用即可握手 |
 | 协商协议 | protocol v2；双方 Hello，participant ID 确定临时 Offer 发起方，epoch + negotiation ID 隔离重连轮次 |
 | 应用层加密 | Web Crypto API，随机会话秘密经 SHA-256 导入为 AES-GCM 密钥，每条消息使用独立 12 字节 IV |
-| 历史记录 | 每台设备的 `localStorage`，仅保存 `{id, iv, data}` 密文，最多 200 条 |
+| 本机恢复 | IndexedDB 保存完整房间凭证和 `{id, iv, data}` 密文；自动恢复最近会话，每个房间最多 200 条 |
 | 消息类型 | 文字、图片、语音；图片/语音单条上限 1.5 MB |
 | 大消息处理 | 加密后 JSON 按 12,000 字符分片，在接收端重组并解密 |
 | 部署 | Vercel 页面、同源 HTTPS 信令与 Cloudflare TURN 凭证接口；Supabase 同时提供 WebSocket 信令 |

@@ -1,4 +1,4 @@
-import type { ChatMessage, DecryptedChatMessage, EncryptedWire } from "@/src/chat/types";
+import type { ChatMessage, EncryptedWire } from "@/src/chat/types";
 import { createJsonCipher, randomBase64Url } from "@/src/crypto/aesGcm";
 
 const safetyEmojis = ["🦊", "🌙", "🌿", "🫧", "🐋", "🍊", "🪐", "🪶"];
@@ -21,8 +21,8 @@ export function createMessageCrypto(secret: string) {
       return { id: message.id, ...await cipher.encrypt(message) };
     },
 
-    async decrypt(wire: EncryptedWire): Promise<DecryptedChatMessage> {
-      return await cipher.decrypt(wire) as DecryptedChatMessage;
+    async decrypt(wire: EncryptedWire): Promise<ChatMessage> {
+      return await cipher.decrypt(wire) as ChatMessage;
     },
   };
 }

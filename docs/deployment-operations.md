@@ -9,7 +9,7 @@
 | Upstash Redis | 保存最多 180 秒的 AES-GCM 密文信令，供同源 HTTPS 路径读取 | 只保存临时信令密文 |
 | STUN | 帮助发现可用于 ICE 的公网映射地址 | 否 |
 | TURN（可选） | 直连失败时中继已经加密的 WebRTC 流量 | 不做应用存储，但会经过中继 |
-| 浏览器 `localStorage` | 保存当前设备的 AES-GCM 密文历史 | 保存密文 |
+| 浏览器 IndexedDB | 保存当前设备的房间凭证和 AES-GCM 密文历史 | 保存密文 |
 
 项目不调用外部业务数据源，不读取第三方内容 API，也不使用 Supabase Database、Auth 或 Storage 保存聊天消息。
 

@@ -20,7 +20,7 @@ TwoOnly 运行时有六类参与组件：
 | Redis Stream | 暂存 AES-GCM 密文信令，180 秒过期 | 不知道 fragment 密钥，不保存聊天正文 |
 | STUN | 告诉浏览器公网侧看到的地址 | 不转发聊天内容 |
 | TURN | 直连不通时中继 WebRTC 数据 | 不负责房间和消息历史 |
-| `localStorage` | 在当前设备保存 AES-GCM 密文 | 不做多设备同步 |
+| IndexedDB | 在当前设备保存房间凭证和 AES-GCM 密文 | 不做多设备同步 |
 
 最重要的一句话是：
 
@@ -174,7 +174,7 @@ DataChannel 不是无限大的管道。大消息会带来缓冲和队头阻塞�
 sequenceDiagram
   participant UI as 输入与媒体 UI
   participant C as Crypto
-  participant L as localStorage
+  participant L as IndexedDB
   participant D as DataChannel
   participant R as 对端浏览器
 
@@ -203,7 +203,7 @@ https://站点/?room=<roomId>#<secret>
 - `roomId` 用来选择 Supabase topic；
 - `secret` 放在 URL Fragment，也就是 `#` 后面。
 
-旧版 `&role=host` / `&role=guest` 链接仍能打开，但 v2 会忽略角色参数；它只在恢复旧版本地消息方向时作为兼容提示。新复制的链接没有角色，两个人打开的是同一种 URL。
+解析器只读取 `room` 和 fragment 中的 `secret`；多余的 `role` 参数不会进入当前状态。新复制的链接没有角色，两个人打开的是同一种 URL。
 
 Fragment 不会作为 HTTP 请求的一部分发给 Vercel。浏览器取到 `secret` 后计算 SHA-256，再把结果导入为不可导出的 AES-GCM 密钥。之所以可以直接哈希，是因为这里的 secret 本身是约 256 位随机值；如果换成用户口令，就必须使用专门的口令派生算法，而不能照搬。
 
@@ -265,7 +265,7 @@ stateDiagram-v2
 
 用户提出“不要一次性，聊天记录保留一下”以后，我们选择了一个边界很清楚的方案：每台设备最多保存 200 条 `EncryptedWire`，刷新时使用邀请链接里的 secret 本地解密。
 
-v2 不再把消息作者写成 host/guest，而是使用当前标签页视角的 `self / peer`。标签页发送消息时会把 message ID 记进本标签的 `sessionStorage`；刷新后用这份 ID 列表恢复“我/对方”。旧 role 链接只在读取 v1 密文作者时提供兼容提示。
+消息作者使用当前设备视角的 `self / peer`。这个方向随密文记录一起写进 IndexedDB，刷新或重新打开浏览器后直接恢复，不依赖标签页状态或 URL 角色。
 
 优点是服务端没有聊天数据库，隐私模型简单；代价也同样明确：
 

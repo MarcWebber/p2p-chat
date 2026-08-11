@@ -123,8 +123,7 @@ export function isSignalMessage(value: unknown): value is SignalMessage {
 
   if (signal.type === "rejected") {
     return hasValidTarget(signal)
-      && (signal.reason === SIGNAL_REJECTION_REASON.roomFull
-        || signal.reason === SIGNAL_REJECTION_REASON.protocol);
+      && signal.reason === SIGNAL_REJECTION_REASON.roomFull;
   }
 
   if (signal.type !== "offer" && signal.type !== "answer" && signal.type !== "candidate") {
@@ -141,18 +140,6 @@ export function isRoutedSignalMessage(value: unknown): value is RoutedSignalMess
   return isSignalMessage(value)
     && isPublicSignalId(value.signalId)
     && isPositiveEpoch(value.sentAt);
-}
-
-export function isLegacySignalMessage(value: unknown) {
-  if (!isRecord(value)) return false;
-  const signal = value;
-  return signal.protocol === undefined
-    && isPublicSignalId(signal.from)
-    && (signal.type === "hello"
-      || signal.type === "offer"
-      || signal.type === "answer"
-      || signal.type === "candidate"
-      || signal.type === "rejected");
 }
 
 export type SignalProviderName = "supabase" | "https";

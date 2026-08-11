@@ -97,7 +97,7 @@ Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服�
 | 双方都有 `hello.received`，没有 `peer.elected` | peer lock 或 epoch 判定未完成 | 查 `hello.busy`、`hello.stale`、`signal.message.stale_epoch` |
 | `peer.elected localIsOfferer=true` 后没有 `sdp.offer.created` | 临时发起端创建 Offer 失败 | 查紧随其后的 `sdp.negotiation.failed` |
 | Offer/Answer 轮次不一致 | 旧协商污染当前连接 | 比较双方 epoch 与短 negotiation ID，并让双方刷新到同一版本 |
-| `signal.protocol.legacy` | 房间里仍有旧协议页面 | 双方全部刷新后重新进入 |
+| `signal.message.invalid` | 收到了不符合当前协议的信令 | 确认双方使用同一部署版本后重新进入 |
 
 ### 2.5 浏览器 Console 与 Vercel Logs 有什么区别？
 
@@ -208,7 +208,7 @@ WebRTC 的 `disconnected` 可能只是短暂抖动，立即销毁连接会让双
 
 ### 5.1 聊天记录为什么没有同步到新设备？
 
-历史以 AES-GCM 密文保存在每台设备的 `localStorage`。它能在同一浏览器刷新后恢复，但不会跨设备同步；双方离线时也没有服务器信箱。
+完整房间凭证和 AES-GCM 密文历史保存在每台设备的 IndexedDB。它能在同一浏览器重新打开后恢复，但不会跨设备同步；双方离线时也没有服务器信箱。
 
 ### 5.2 为什么不能公开完整邀请链接？
 
@@ -216,9 +216,7 @@ URL fragment 中包含会话秘密。fragment 通常不会随 HTTP 请求发送�
 
 ### 5.3 旧链接中的 `role=host` / `role=guest` 还有效吗？
 
-不再决定连接行为。v2 新链接统一为 `?room=<id>#<secret>`；旧参数只用于迁移已有本地消息方向。双方都会发送 Hello，再由随机 `participantId` 选出本轮临时 Offer 发起方。
-
-旧 URL 可解析不代表 v1/v2 信令互通。出现 `signal.protocol.legacy` 时，应让双方全部刷新到最新部署。
+无效。当前解析器只读取 `room` 和 fragment 中的 `secret`；多余的 `role` 参数即使仍出现在地址里也会被普通地忽略，不进入邀请、存储、消息方向或协商状态。双方都会发送 Hello，再由随机 `participantId` 选出本轮临时 Offer 发起方。旧版信令不符合当前结构时统一记录为 `signal.message.invalid`。
 
 ### 5.4 第三个人为什么有时刷新后还能尝试进入？
 

@@ -130,23 +130,24 @@ type ChatMessage = {
 
 消息 JSON 先整体加密，再把密文 JSON 按 12,000 字符切成 `ChunkPacket`。接收端按消息 ID 和序号重组，只有分片完整后才执行 AES-GCM 解密。
 
-`self / peer` 是当前标签页的 UI 方向，不是网络协议角色。发送消息时，标签页把消息 ID 记入 `sessionStorage` 的 `twoonly:<roomId>:sent-message-ids:v2`；刷新并解密本地历史时，以该列表恢复“我/对方”。旧链接中的 `role=host/guest` 只用于兼容 v1 密文里的旧 author 值，新消息不再写入角色。
+`self / peer` 是本机 UI 方向，不是网络协议角色。方向元数据随密文记录保存在 IndexedDB；读取历史时直接使用这份本机方向，不从 URL 或旧存储猜测。
 
 当前未实现发送背压；持续发送多个大文件可能增大 `RTCDataChannel.bufferedAmount`。正式版应设置 `bufferedAmountLowThreshold` 并等待 `bufferedamountlow`。
 
 ## 7. 本地加密历史
 
-每个房间的存储键为：
+IndexedDB 使用两个 object store：
 
 ```text
-twoonly:<roomId>:messages
+rooms      完整房间凭证与最近活动时间
+messages   按 roomId 保存 EncryptedWire 和本机方向
 ```
 
-数组中只保存 `EncryptedWire`，不保存明文 `ChatMessage`，并保留最新 200 条。刷新页面后，从 URL Fragment 重新取得 `secret`，逐条解密并渲染。清空记录只删除当前设备、当前房间对应的 `localStorage`。
+消息正文仍只保存 `EncryptedWire`，不保存明文 `ChatMessage`，每个房间保留最新 200 条。重新打开首页时可从 `rooms` 自动恢复最近会话；清空记录只删除当前设备、当前房间对应的 `messages`。
 
 注意：
 
-- `localStorage` 不是抗取证或硬件安全存储；能控制当前浏览器环境的脚本、扩展或本机用户可能读取密文和页面内存中的密钥。
+- IndexedDB 不是抗取证或硬件安全存储；能控制当前浏览器环境的脚本、扩展或本机用户可能读取密文和页面内存中的密钥。
 - 清理浏览器数据、换设备或丢失完整邀请链接后，历史无法恢复。
 - 对方离线时，新消息只保存在发送方本机，不会自动补发。
 

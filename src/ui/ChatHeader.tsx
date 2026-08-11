@@ -1,4 +1,4 @@
-import type { ConnectionState } from "@/src/chat/types";
+import type { ConnectionState, ConversationSummary } from "@/src/chat/types";
 
 type ChatHeaderProps = {
   connection: ConnectionState;
@@ -8,6 +8,9 @@ type ChatHeaderProps = {
   onCopyInvite: () => void;
   onReconnect: () => void;
   onCreateRoom: () => void;
+  conversations: ConversationSummary[];
+  activeRoomId: string;
+  onOpenRoom: (roomId: string) => void;
 };
 
 export function ChatHeader({
@@ -18,6 +21,9 @@ export function ChatHeader({
   onCopyInvite,
   onReconnect,
   onCreateRoom,
+  conversations,
+  activeRoomId,
+  onOpenRoom,
 }: ChatHeaderProps) {
   return (
     <header className="chat-header">
@@ -26,6 +32,18 @@ export function ChatHeader({
         <p><span className={`status-dot ${connection}`} /> {connectionMode}</p>
       </div>
       <div className="header-actions">
+        <select
+          className="mobile-room-select"
+          value={activeRoomId}
+          onChange={(event) => onOpenRoom(event.target.value)}
+          aria-label="切换以前的聊天"
+        >
+          {conversations.map((room) => (
+            <option value={room.roomId} key={room.roomId}>
+              聊天 {room.roomId.slice(0, 5)}
+            </option>
+          ))}
+        </select>
         <span className="safety-code" title="请与对方核对安全码">安全码 {safetyCode}</span>
         {connection !== "connected" ? (
           <button className="invite-button" onClick={onCopyInvite}>{copied ? "已复制" : "邀请对方"}</button>
