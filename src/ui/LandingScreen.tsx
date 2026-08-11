@@ -1,9 +1,8 @@
 type LandingScreenProps = {
-  remoteSignalingEnabled: boolean;
   onCreateRoom: () => void;
 };
 
-export function LandingScreen({ remoteSignalingEnabled, onCreateRoom }: LandingScreenProps) {
+export function LandingScreen({ onCreateRoom }: LandingScreenProps) {
   return (
     <main className="landing-shell">
       <header className="landing-header">
@@ -21,11 +20,7 @@ export function LandingScreen({ remoteSignalingEnabled, onCreateRoom }: LandingS
             <span>本地保存</span><i />
             <span>图片和语音</span>
           </div>
-          <p className="prototype-note">
-            {remoteSignalingEnabled
-              ? "已开启跨设备连接"
-              : "本地联调模式 · 配置 Supabase 后支持跨设备"}
-          </p>
+          <p className="prototype-note">跨设备连接 · Supabase Realtime 信令</p>
         </section>
 
         <section className="wiki-card" aria-labelledby="wiki-title">

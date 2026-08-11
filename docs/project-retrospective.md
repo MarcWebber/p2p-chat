@@ -64,9 +64,9 @@ flowchart TD
 
 ## 这次遇到的几个真实问题
 
-### 1. 同一台电脑能用，外部用户不能用
+### 1. 本地模拟能用，外部用户不能用
 
-同浏览器双标签页会走 `BroadcastChannel`，它只能证明本地信令适配器和 WebRTC 代码基本能跑，不能证明跨设备网络成立。
+早期实现曾为同浏览器双标签页保留 `BroadcastChannel` 信令。它绕开 Supabase，导致本地成功无法证明 Realtime WebSocket 或跨设备网络成立。这个 fallback 后来被完整删除；开发、测试和生产现在统一使用 Supabase 信令，配置缺失时直接报告错误。
 
 跨设备需要至少三件事同时正确：
 
@@ -74,7 +74,7 @@ flowchart TD
 2. Realtime Channel 真正订阅成功；
 3. 两端网络能建立 WebSocket 并完成 ICE。
 
-这次经验很直接：**本地双标签页不是跨网络 E2E。**以后验收必须明确区分本地静态检查、浏览器双标签页、不同设备、不同网络和生产环境。
+这次经验很直接：**本地页面能跑不是跨网络 E2E。**以后验收必须明确区分静态检查、双浏览器、不同设备、不同网络和生产环境。
 
 ### 2. 信令恢复了，双方却不会重新握手（v1 固定角色协议）
 
@@ -147,7 +147,7 @@ v2 把这层角色彻底拿掉：
 
 ```mermaid
 flowchart LR
-  STATIC["typecheck / build"] --> LOCAL["本地双标签页"]
+  STATIC["typecheck / build"] --> LOCAL["双浏览器 / 双设备"]
   LOCAL --> RELAY["强制 TURN relay"]
   RELAY --> DEPLOY["Vercel Production"]
   DEPLOY --> HTTP["首页与 API 200"]
@@ -158,7 +158,7 @@ flowchart LR
 
 - TypeScript 检查通过；
 - Next.js 生产构建通过；
-- 本地参与者 A、B 强制使用 TURN，双方显示中继模式；
+- 参与者 A、B 在独立浏览器中强制使用 TURN，双方显示中继模式；
 - 加密测试消息成功到达对端；
 - 生产首页 HTTP 200；
 - 生产凭证接口 HTTP 200；

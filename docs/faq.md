@@ -1,291 +1,267 @@
 # TwoOnly 常见问题与网络排障 FAQ
 
-这份 FAQ 记录的是项目实际踩过的坑。重点不是背 WebRTC 名词，而是拿到一条可验证的证据链：到底是网页没打开、信令没通、TURN 没分配地址，还是已经分配了地址但最终链路仍然没建立。
+这份 FAQ 按故障类型组织，不按问题出现的时间堆笔记。排障目标只有一个：确认连接停在网页、TURN 凭据、Supabase 信令、ICE 选路还是 DataChannel，并让两端拿出能互相印证的日志。
 
-## 先说结论：有 TURN，也不能保证 100% 建联
+## 0. 先看总流程
 
-TURN 是 WebRTC 在直连失败时的重要兜底，但它不是“只要开通就一定连接”的开关。一次真正可用的中继连接至少要连续通过下面几层：
-
-```mermaid
-flowchart LR
-  A["取得短时凭证"] --> B["连接 TURN 服务"]
-  B --> C["双方各自取得 relay candidate"]
-  C --> D["通过信令交换候选地址"]
-  D --> E["ICE 检查选中 relay candidate pair"]
-  E --> F["DataChannel 双向收发字节"]
-  F --> G["TURN 服务端出现实际流量"]
-```
-
-前一层成功，只能说明前一层，不自动证明后一层。例如 `/api/turn-credentials` 返回 `200`，只能说明浏览器拿到了地址和临时账号；它不能证明当前网络能连上 TURN，也不能证明 ICE 最终选中了中继路径。
-
-## 页面上的“连接诊断”怎么用？
-
-聊天页面右上角现在有一条默认折叠的“连接诊断”。展开后会看到六个阶段：
-
-```text
-凭据 → 信令 → Hello → SDP → ICE → 通道
-```
-
-每条日志同时写入浏览器 Console，统一使用下面的前缀：
-
-```text
-[twoonly][trace-id][时间][阶段][事件代码]
-```
-
-面板最多保留本页最近 200 条日志，列表显示最近 60 条。重复的 Hello 和 Candidate 会在页面中合并为 `×N`，Console 仍保留每次事件。点击“复制日志”即可把脱敏后的完整记录发给排障人员；它不会写入 `localStorage`，刷新即清空。
-
-日志刻意不记录完整邀请链接、fragment secret、安全码、房间 ID、TURN username/credential、Supabase key、完整 SDP、原始 ICE Candidate/IP 或消息内容。不要为了排障再手动把这些敏感数据粘贴进公开聊天。
-
-### 两端共同的期望顺序
-
-```text
-client.invitation.ready
-credentials.request.start
-credentials.success               HTTP 200，取得临时 TURN 配置
-credentials.ready                 source=dynamic，turnConfigured=true
-signal.subscribe.start
-signal.subscribed                 Supabase Realtime 已订阅
-hello.sent / hello.ack             双方都发 Hello，服务端确认 ok
-hello.received                     收到并锁定另一位参与者
-peer.elected                       双方得到同一个临时 Offer 发起方
-```
-
-随后只有日志分工不同，不代表权限不同：
-
-```text
-临时 Offer 发起方：sdp.offer.created / sdp.offer.ack → sdp.answer.received / sdp.answer.applied
-另一端：          sdp.offer.received / sdp.offer.remote_applied → sdp.answer.sent / sdp.answer.ack
-两端共同：        ice.gathering.* / ice.candidate.* → ice.connected 或 completed → data.open → ice.selected_pair
-```
-
-Offer 发起方由当前页面随机 `participantId` 的字符串顺序决定，下次打开可能互换。页面上的阶段灯只负责快速定位，排查时仍应复制完整日志；另一位参与者尚未上线时，SDP、ICE 和通道保持“等待”是正常现象。
-
-### 日志停在哪里，应该查哪里？
-
-| 最后出现的关键日志 | 说明 | 下一步 |
+| 问题类型 | 典型症状 | 对应章节 |
 | --- | --- | --- |
-| `credentials.request.start`，10 秒内没有结果 | 浏览器到 Vercel 凭据接口可能悬挂 | 看 Network 中该请求的 DNS、TLS、状态和耗时 |
-| `credentials.request.timeout` | 客户端已主动中止凭据请求 | 查 `/api/turn-credentials` 可达性；客户端会继续以静态配置或 STUN-only 启动信令 |
-| `credentials.response.http_error` 且 `status=502` | 浏览器已到 Vercel，Vercel 到 Cloudflare 或 Cloudflare 配置失败 | 用 `requestId` 对照 Vercel Function 日志 |
-| `credentials.success` 后没有 `signal.subscribed` | TURN 凭据正常，Supabase Realtime WebSocket 未完成订阅 | 查 Supabase 域名、WSS、代理和运营商网络 |
-| A 有 `hello.ack`，B 没有 `hello.received` | A 已把广播交给信令服务，但 B 没收到 | 检查 B 是否在线、双方房间链接是否一致、Realtime 广播是否投递 |
-| 双方都有 `hello.received`，没有 `peer.elected` | 对端发现成功，但 peer lock 或 epoch 判定没有完成 | 查 `hello.busy`、`hello.stale`、`signal.message.stale_epoch` |
-| `peer.elected localIsOfferer=true` 后没有 `sdp.offer.created` | 问题位于本轮临时发起端的 Offer 创建 | 查紧随其后的 `sdp.negotiation.failed` |
-| Offer/Answer 完整，没有 relay candidate | SDP 信令正常，当前设备无法从 TURN 获得 relay 地址 | 分别测试 TURN UDP、TCP、TLS 443 |
-| 已有 relay candidate，但出现 `ice.failed` | TURN allocation 可能成功，但 ICE connectivity check 没建成可用路径 | 查 Candidate 轮次、端口、网络丢包和服务端流量 |
-| `ice.connected` 后没有 `data.open` | ICE 已连通，问题位于 SCTP/DataChannel 层 | 比对两端 DataChannel 与 PeerConnection 状态 |
+| 页面与凭据 | 页面打不开、凭据超时、接口 502/503 | [1. 页面与 TURN 凭据](#1-页面与-turn-凭据) |
+| Supabase 信令 | `websocket connection failed`、没有 `signal.subscribed` | [2. Supabase 信令](#2-supabase-信令) |
+| ICE 与 TURN | 没有 relay、`ice.failed`、无法确认是否走中继 | [3. ICE 与 TURN](#3-ice-与-turn) |
+| 连接生命周期 | 两端状态不一致、反复自动重连、换网失败 | [4. 连接生命周期与网络差异](#4-连接生命周期与网络差异) |
+| 产品与安全边界 | 历史不同步、旧角色链接、第三人进入 | [5. 产品与安全边界](#5-产品与安全边界) |
 
-### `websocket connection failed` 和 `transport failure` 指向哪里？
+![图 1：TwoOnly 连接故障定位总流程](assets/faq-01-connection-troubleshooting.png)
 
-当前依赖的 Supabase Realtime SDK 会把某些底层 Channel 传输错误归一化为 `channel error: transport failure`。如果它紧跟在浏览器的 `websocket connection failed` 后面，两条通常描述的是同一次 **Supabase 信令 WebSocket** 失败，不是 TURN relay 失败。
+图 1 的规则很简单：前一层成功，只能证明前一层。例如 `/api/turn-credentials` 返回 200，不能证明当前网络能连接 TURN；收集到 relay candidate，也不能证明 ICE 最终选中了它。
 
-TwoOnly 的信令是在 ICE 配置解析完成后启动的。因此，只要已经看到 `signal.subscribe.start` 或 Supabase WebSocket 连接尝试，就说明凭据步骤已经结束——可能是 `credentials.success`，也可能是失败后 `credentials.ready source=stun-only`。新增日志正是用来消除这层猜测。
+## 1. 页面与 TURN 凭据
 
-浏览器侧凭据请求现在有 10 秒超时。即使某个网络访问不了 `/api/turn-credentials`，页面也会明确记录 timeout，并继续启动 Supabase 信令，不会无限卡在最基础的一环。Vercel Route 同时生成 `requestId`；成功和失败响应都会带 `X-TwoOnly-Request-Id`，服务端日志可用同一 ID 对照浏览器记录。
+### 1.1 页面打不开，先查什么？
 
-## 如何确定对方能够访问 TURN？
+先在故障设备上直接打开正式地址，确认 DNS、TLS 和页面资源均成功。不要用自己电脑能打开作为对方网络的证据。
 
-不要只在一个页面测试。参与者 A、B 应当分别在各自真实网络完成下面的检查。
+浏览器 Network 中至少应看到：
 
-| 验证层级 | 怎么看 | 成功能证明什么 | 仍然不能证明什么 |
-| --- | --- | --- | --- |
-| 1. 凭证 | 浏览器 Network 中 `/api/turn-credentials` 返回 `200`，响应含 `iceServers` | Vercel 接口和 Cloudflare 凭证生成正常 | 对方网络能访问 TURN |
-| 2. 分配 | 用 Trickle ICE 收集到 `relay` candidate | 这台设备、这个浏览器、当前网络能向 TURN 创建 allocation | 两个浏览器能够建成一条会话 |
-| 3. 选路 | 强制 relay 后，两端实际选中的 Candidate Pair 含 `relay` | ICE 已经选中 TURN 中继路径 | 应用数据一定正常、连接能够长期维持 |
-| 4. 数据 | Candidate Pair 的 `bytesSent`、`bytesReceived` 在双向发消息时持续增长 | WebRTC 数据确实双向经过该候选对 | 服务端是否观察到同一流量 |
-| 5. 服务端 | Cloudflare TURN Analytics 同期出现连接数和 ingress/egress bytes | TURN 边缘确实中继了流量 | 应用消息是否被正确解密和展示 |
+- HTML 文档返回 200；
+- 页面脚本和样式加载完成；
+- `/api/turn-credentials` 请求有明确的状态码，而不是一直 pending；
+- 没有代理证书错误、DNS 错误或跨域拦截。
 
-### 最可靠的现场测试
+页面本身不可达时，WebRTC、Supabase 和 TURN 都还没有开始，继续看 ICE 日志没有意义。
 
-1. 在生产环境临时设置 `NEXT_PUBLIC_ICE_TRANSPORT_POLICY=relay`，重新部署。该变量是前端构建变量，仅修改而不重新部署不会生效。
-2. 参与者 A、B 分别使用待验证的真实网络打开全新的页面，避免用同一台设备、同一 Wi-Fi 得出结论。
-3. 两端都应建立连接，并显示“TURN 加密中继”。若只显示“WebRTC 已连接”，浏览器统计可能尚未提供可判定的候选对，继续看 WebRTC 内部统计。
-4. 双方各发送一条文字消息，再发送一张小图片。只有双向都成功才算通过。
-5. 在 Chromium 打开 `chrome://webrtc-internals`，找到本次 `RTCPeerConnection`，确认 selected/nominated Candidate Pair 的状态为 `succeeded`，候选类型含 `relay`，并观察 `bytesSent` 与 `bytesReceived` 都在增加。Firefox 可查看 `about:webrtc`。
-6. 在 Cloudflare TURN Analytics 对照测试时间检查 `concurrentConnections`、`ingressBytes` 和 `egressBytes`。
-7. 测完把 `NEXT_PUBLIC_ICE_TRANSPORT_POLICY` 恢复为 `all` 并重新部署。日常强制中继会增加延迟和 TURN 流量成本，也失去直连优势。
-
-如果第 2 层失败，就是“对方访问不了 TURN”或认证/服务配置问题；如果第 2 层成功、第 3 层失败，则重点查 ICE 信令、候选交换和连通性检查；如果第 3 层成功、第 4 层失败，则重点查 DataChannel、页面生命周期和应用协议。
-
-### 用 Trickle ICE 单独测试某一台设备
-
-[WebRTC 官方 Trickle ICE 页面](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/)适合把 TwoOnly 和 TURN 分开测试：
-
-1. 在该设备上打开 TwoOnly，进入开发者工具的 Network。
-2. 查看 `/api/turn-credentials` 的响应，临时复制其中一组 `urls`、`username` 和 `credential`。这些是短时敏感凭证，不要截图公开，也不要写入文档或 Git。
-3. 在 Trickle ICE 删除默认服务器，只添加一条待测 TURN 地址。
-4. 点击 **Gather candidates**，结果中出现 `relay` 才表示当前浏览器和网络完成了 TURN allocation。
-5. 将 UDP、TCP、TLS 地址拆开逐条测，记录哪一种能成功。
-
-Trickle ICE 只验证“这台设备能否取得中继候选地址”，不是双端聊天验收。完整结论仍要靠强制 relay 的两端实测。
-
-## 为什么开了 TURN 仍然可能失败？
-
-常见原因不止“对方完全访问不了 relay”：
-
-- 对方能访问 Vercel 凭证接口，却无法解析或连接 TURN 主机。
-- UDP 被公司、校园网、代理或运营商封锁，而 TCP/TLS 备用地址也被过滤或没有正确配置。
-- 临时用户名或密码已过期、撤销或签发错误。TwoOnly 当前申请约 24 小时凭证；超长页面会话还没有主动刷新 TURN 凭证。
-- 一端取得了 `relay` candidate，另一端没有；TURN allocation 本来就是双方各自完成的。
-- 双方都有 relay candidate，但候选信令丢失、属于旧一轮协商，或 ICE connectivity check 没有选中它。
-- TURN 已建立 allocation，但 Permission、ChannelBind 或 allocation 刷新失败，长连接随后断开。
-- 服务端容量、配额、临时维护、网络拓扑变化、严重丢包或 MTU 问题使已有路径中断。
-- WebRTC 实际已经恢复，但 UI 仍保留旧的 `disconnected` 状态。这是项目之前遇到过的客户端状态同步问题，不是 TURN 本身失效。
-
-Cloudflare 也明确说明，凭证过期可能断开 allocation，维护或网络拓扑变化也可能影响已建立的 TURN allocation；客户端应具备 ICE restart/重新握手能力。TwoOnly 已实现自动重新握手，但无法消除外部网络和服务本身的所有失败。
-
-## 凭证接口返回 200，是否等于 TURN 正常？
+### 1.2 凭据接口返回 200，是否等于 TURN 正常？
 
 不等于。它只证明：
 
 - 当前设备能访问 TwoOnly 的 Vercel Function；
-- 服务端 TURN Key ID 和 API Token 能生成一组短时配置；
-- 浏览器收到了格式可用的 `iceServers`。
+- Vercel 保存的 Cloudflare Key ID 和 API Token 能生成短时配置；
+- 浏览器收到了格式有效的 `iceServers`。
 
-真正的 TURN 可用性至少还要看到 `relay` candidate。真正“正在使用 TURN”则要看到实际选中的 Candidate Pair 含 `relay`，并且字节计数增长。
+真正的 TURN 可用性至少要看到 `relay` candidate。确认聊天确实经过 TURN，则还要看到实际选中的 Candidate Pair 含 `relay`，并且双向字节持续增长。
 
-## 看到 relay candidate，是否等于聊天正在走 TURN？
+### 1.3 凭据日志异常时怎么处理？
 
-不等于。ICE 通常会同时收集 `host`、`srflx` 和 `relay` 多种候选地址，再从中选出一对可用路径。候选池里出现过 relay，只表示 TURN 是可选项；最终仍可能选中更快的直连路径。
+| 最后事件 | 判断 | 处理 |
+| --- | --- | --- |
+| `credentials.request.start` 后超过 10 秒没有结果 | 浏览器到 Vercel 请求悬挂 | 在 Network 检查 DNS、TLS、状态和耗时 |
+| `credentials.request.timeout` | 客户端已主动中止请求 | 检查 `/api/turn-credentials`；客户端会继续使用静态 ICE 或 STUN-only |
+| `credentials.response.http_error`，状态 502 | Vercel 已收到请求，但 Cloudflare 调用或配置失败 | 用 `requestId` 对照 Vercel Function 日志 |
+| 状态 503、错误为 `turn_not_configured` | 生产环境缺少 Cloudflare TURN 变量 | 检查 Vercel Production 环境变量并重新部署 |
+| `credentials.success` 与 `credentials.ready` | 凭据阶段完成 | 继续检查 `signal.subscribed`，不要提前判定 TURN 可用 |
 
-TwoOnly 现在读取 `RTCPeerConnection.getStats()` 中实际选中的 Candidate Pair：
+Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服务端日志格式是 `[twoonly:turn][requestId] ...`，可用它把浏览器请求和 Function 日志对应起来。
 
-- 选中路径含 `relay`：显示“TURN 加密中继”；
+## 2. Supabase 信令
+
+![图 2：双方对等建连的正常时序](assets/faq-02-peer-connection-sequence.png)
+
+图 2 中的参与者 A、B 完全对等。双方都发送 Hello；`participantId` 只用于选出本轮临时 Offer 发起方，不是长期身份，也不是权限角色。Supabase 只交换建连信息，聊天正文不会发给 Supabase。
+
+### 2.1 任意一方无法访问 Supabase，会发生什么？
+
+建连前，双方必须通过 Supabase Realtime WebSocket 交换 Hello、Offer、Answer 和 ICE Candidate。任意一方无法访问 Supabase 时，即使 TURN 完全正常，也没有足够信息建立 PeerConnection。
+
+已经出现 `data.open` 后，现有聊天通常可以继续，因为正文走 WebRTC DataChannel；但刷新页面、网络迁移或连接断开后，重新握手仍依赖 Supabase。
+
+项目现在把 Supabase 作为必需信令，不再提供 `BroadcastChannel` 本地 fallback。缺少任一公开 Supabase 变量时会记录 `signal.config.missing` 并明确显示信令不可用。同浏览器标签页专用的伪降级既不能服务真实用户，也容易把本地测试误当成跨设备验收。
+
+后续解决方式不是让单边在失败后切换服务，而是让双方同时连接 Supabase 与一个共同可达的备用信令，再按唯一消息 ID 去重。完整设计见 [Supabase 不可达时的信令容灾方案](signaling-resilience.md)。
+
+### 2.2 `websocket connection failed` 与 `transport failure` 是 TURN 报错吗？
+
+通常不是。Supabase Realtime SDK 会把部分底层 WebSocket 故障归一化为 `transport failure`。如果两条错误前后紧邻，它们一般描述同一次 Supabase 信令 WebSocket 失败。
+
+典型证据是已经出现 `credentials.success` 和 `signal.subscribe.start`，随后出现 `signal.transport.error`，却始终没有 `signal.subscribed`。此时应检查 Supabase 域名解析、WSS 连接、代理、防火墙和运营商链路，而不是继续修改 TURN。
+
+### 2.3 正常建连应看到哪些关键事件？
+
+| 阶段 | 两端应出现的关键事件 | 成功含义 |
+| --- | --- | --- |
+| 凭据 | `credentials.success`、`credentials.ready` | ICE 配置解析完成 |
+| 信令 | `signal.subscribe.start`、`signal.subscribed` | Realtime Channel 已订阅 |
+| 对端发现 | `hello.sent`、`hello.ack`、`hello.received` | 双方能够通过信令互相发现 |
+| 临时选举 | `peer.elected` | 双方锁定同一个 peer 并确定本轮 Offer 发起方 |
+| SDP | `sdp.offer.*`、`sdp.answer.*` | Offer/Answer 已交换并应用 |
+| ICE | `ice.candidate.*`、`ice.connected` 或 `ice.completed` | 已选出可用网络路径 |
+| 通道 | `data.open`、`ice.selected_pair` | 可以双向发送加密消息 |
+
+日志同时写入页面“连接诊断”和浏览器 Console，统一前缀为 `[twoonly][traceId][时间][阶段][事件代码]`。页面保留最近 200 条、展示最近 60 条；重复 Hello/Candidate 会在面板中合并。日志不会持久化，刷新后清空。
+
+### 2.4 Hello、选举或 SDP 停住时怎么判断？
+
+| 现象 | 判断 | 下一步 |
+| --- | --- | --- |
+| A 有 `hello.ack`，B 没有 `hello.received` | A 已把广播交给 Supabase，但 B 没收到 | 确认 B 已订阅、双方链接 room 一致、B 的 WSS 可达 |
+| 双方都有 `hello.received`，没有 `peer.elected` | peer lock 或 epoch 判定未完成 | 查 `hello.busy`、`hello.stale`、`signal.message.stale_epoch` |
+| `peer.elected localIsOfferer=true` 后没有 `sdp.offer.created` | 临时发起端创建 Offer 失败 | 查紧随其后的 `sdp.negotiation.failed` |
+| Offer/Answer 轮次不一致 | 旧协商污染当前连接 | 比较双方 epoch 与短 negotiation ID，并让双方刷新到同一版本 |
+| `signal.protocol.legacy` | 房间里仍有旧协议页面 | 双方全部刷新后重新进入 |
+
+### 2.5 浏览器 Console 与 Vercel Logs 有什么区别？
+
+- 浏览器 Console：记录凭据请求、Supabase、Hello、SDP、ICE、DataChannel 和重连全过程。
+- Vercel Runtime Logs：只记录服务端 Route，例如 TURN 凭据签发；看不到浏览器里的 WebRTC 状态。
+- Supabase Dashboard：用于观察 Realtime 服务状态；它不会替代两端浏览器日志。
+
+复制诊断日志时不要额外粘贴完整邀请链接、fragment secret、安全码、TURN username/credential、Supabase key、完整 SDP、原始 Candidate/IP 或聊天内容。客户端已有脱敏逻辑，不要手工绕过。
+
+## 3. ICE 与 TURN
+
+![图 3：TURN 可用性的五级证据](assets/faq-03-turn-evidence-levels.png)
+
+### 3.1 为什么开了 TURN 仍然可能失败？
+
+常见原因包括：
+
+- 对方能访问凭据接口，却无法解析或连接 TURN 主机；
+- UDP 被企业网、校园网、代理或运营商封锁，TCP/TLS 备用地址也不可达；
+- 临时用户名或凭据过期、撤销或签发错误；
+- 只有一端取得 relay candidate；TURN allocation 本来就由双方各自完成；
+- 两端都有 relay，但 Candidate 信令丢失、属于旧协商，或 ICE connectivity check 没选中它；
+- allocation 已建立，但 Permission、ChannelBind 或刷新失败；
+- 服务容量、临时维护、严重丢包、MTU 或网络拓扑变化导致路径中断；
+- WebRTC 已恢复，而 UI 仍保留旧状态；这种情况必须用选中候选对和双向字节复核。
+
+TURN 是穿透兜底，不是连接成功开关。它无法替代 Supabase 信令，也无法保证所有运营商网络都能访问 relay。
+
+### 3.2 如何确定对方机器能够访问 TURN？
+
+参与者 A、B 必须分别在自己的真实网络测试：
+
+1. 打开 [WebRTC Trickle ICE](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/)。
+2. 从本机 `/api/turn-credentials` 响应临时取出一组 TURN `urls`、`username`、`credential`；不要截图、公开或提交这些短时敏感值。
+3. 删除页面默认服务器，只添加一个待测 TURN 地址。
+4. 点击 **Gather candidates**；出现 `relay` 才证明这台设备、这个浏览器和当前网络完成了 TURN allocation。
+5. 分别测试 UDP、TCP 和 TLS 443，记录每种结果。
+
+Trickle ICE 只证明单机能获得中继候选。完整聊天仍需两端强制 relay、双向发消息，并检查 Candidate Pair。
+
+### 3.3 看到 relay candidate，是否等于聊天正在走 TURN？
+
+不等于。ICE 可以同时收集 `host`、`srflx`、`relay`，最终会选择一对可用路径。出现 relay 只说明 TURN 是候选项；实际选中路径必须从 `RTCPeerConnection.getStats()` 或浏览器 WebRTC 内部页确认。
+
+TwoOnly 的状态文案按实际选中的 Candidate Pair 判断：
+
+- 候选对含 `relay`：显示“TURN 加密中继”；
 - 选中直连候选：显示“WebRTC 点对点直连”；
-- 浏览器暂时没暴露足够统计：显示“WebRTC 已连接”。
+- 浏览器暂未暴露足够统计：显示“WebRTC 已连接”。
 
-## 一端显示 TURN 正常，另一端却一直显示断开，正常吗？
+### 3.4 怎样判断是哪种 TURN 传输被拦截？
 
-短暂不一致可能来自两端状态事件和统计更新的时间差，但持续不一致不正常。一条已经建立的 ICE Candidate Pair 在逻辑上是同一条双向路径；两端看到的 local/remote 方向会互换，状态文案不应长期一个成功、一个失败。
+| 单独测试地址 | 用途 | 常见判断 |
+| --- | --- | --- |
+| `turn:…:3478?transport=udp` | 常规 UDP TURN，通常延迟最低 | 失败而 TLS 成功，多半是 UDP 受限 |
+| `turn:…:3478?transport=tcp` | TCP 兜底 | UDP/TCP 都失败时继续测 TLS 443 |
+| `turns:…:443?transport=tcp` | TLS 443 兜底 | 严格网络通常更容易放行 |
 
-项目之前确实存在一个客户端 bug：瞬时 `disconnected` 会立刻触发重建，而恢复后的 `connected` 没有统一清理旧重连状态；同时旧实现只要候选池出现过 relay 就显示 TURN。现在已经改为：
+三种都失败但凭据接口成功，应查 DNS、代理、防火墙、证书拦截、凭据和服务端状态。三种都能产生 relay，而 TwoOnly 强制 relay 仍失败，则转查 Supabase Candidate 交换和 ICE 协商轮次。
 
-- 对瞬时断开保留 2.5 秒确认期；
-- PeerConnection 或 DataChannel 恢复后统一回到连接成功状态；
-- 只根据实际选中的 Candidate Pair 判断直连或 TURN；
-- 持续断开才启动新一轮协商。
+### 3.5 在 `chrome://webrtc-internals` 里重点看什么？
 
-如果生产环境仍复现，先确认双方都刷新到了同一个最新部署，再用 `chrome://webrtc-internals` 比对两端。不要只凭页面文案判断 TURN 生死。
+- `connectionState` 与 `iceConnectionState`；
+- selected/nominated 且 `succeeded` 的 `candidate-pair`；
+- 对应 local/remote candidate 的 `candidateType`、`protocol`、`relayProtocol`；
+- `bytesSent`、`bytesReceived`、`currentRoundTripTime`；
+- ICE Candidate error 与状态变化时间。
 
-## 怎样判断是哪一种 TURN 传输被拦截？
+两端统计从各自视角记录，本地和远端方向会互换，内部 ID 也不相同。应比较候选类型、协议、时间和双向流量，不要要求两份统计文本逐字一致。
 
-把 ICE Server 地址拆开，逐条用 Trickle ICE 测试：
+### 3.6 Cloudflare TURN Analytics 能证明什么？
 
-| 单独测试 | 结果含义 |
-| --- | --- |
-| `turn:...:3478?transport=udp` | 验证常规 UDP TURN，通常延迟最低 |
-| `turn:...:3478?transport=tcp` | 验证 TCP TURN，可绕过一部分 UDP 限制 |
-| `turns:...:443?transport=tcp` | 验证 TLS 443 兜底，严格网络通常更容易放行 |
+Analytics 的 `concurrentConnections`、`ingressBytes`、`egressBytes` 可以证明测试时间段内 TURN 边缘确实有连接和中继流量，也能帮助发现只有单向字节的异常。
 
-典型判断：UDP 失败、TLS 443 成功，通常是当前网络限制 UDP；三种都失败但凭证接口成功，则检查 DNS、代理、防火墙、证书拦截、凭证和服务端状态；三种都能收集 relay 但 TwoOnly 强制 relay 失败，则转查 Supabase 信令和 ICE 协商。
+它不知道 TwoOnly 的参与者、临时 Offer 发起方或应用消息，也无法读取 AES-GCM 正文。排障时必须记录准确测试时间，再与两端日志和 Candidate Pair 对照。
 
-## 在 `chrome://webrtc-internals` 里重点看什么？
+## 4. 连接生命周期与网络差异
 
-不需要把整页指标都看懂，先找这几项：
+### 4.1 一端显示 TURN 正常，另一端一直断开，合理吗？
 
-- `connectionState` / `iceConnectionState`：是否到达 `connected` 或 `completed`；
-- selected 或 nominated 且 `succeeded` 的 `candidate-pair`；
-- 这对候选的 `localCandidateId` 和 `remoteCandidateId`；
-- 对应 candidate 的 `candidateType`、`protocol`、`relayProtocol`；
-- Candidate Pair 的 `bytesSent`、`bytesReceived`、`currentRoundTripTime`；
-- ICE candidate error 和状态变化发生的准确时间。
+短暂不一致可能来自浏览器状态事件和统计刷新时间差；持续不一致不正常。同一条 ICE Candidate Pair 是双向路径，两端的 local/remote 方向虽相反，但连接状态不应长期一成一败。
 
-两端统计是从各自视角记录的，本地/远端候选会互换，ID 也不会相同。应该比对候选类型、协议、时间和双向流量，而不是要求两份统计文本完全一致。
+项目已经修复过两类误判：瞬时 `disconnected` 现在有 2.5 秒确认期；TURN 文案只根据实际选中的 Candidate Pair，而不是候选池里是否出现过 relay。再次复现时应先确认双方使用同一部署，再比较两端 `data.open`、`ice.selected_pair` 和双向字节。
 
-## Cloudflare TURN Analytics 能帮我确认什么？
+### 4.2 为什么断网恢复后不能立即重连？
 
-Cloudflare 当前通过 GraphQL Analytics API 提供 `concurrentConnections`、`ingressBytes` 和 `egressBytes`，并可按 region、key ID、username 或 custom identifier 等维度筛选。它适合回答：测试时是否真的有 TURN 分配和中继流量、流量来自哪个区域、是否只有单向字节。
+WebRTC 的 `disconnected` 可能只是短暂抖动，立即销毁连接会让双方进入不同协商轮次。TwoOnly 先等待 2.5 秒；原连接恢复便继续使用，持续失败才重新握手。
 
-但它不认识 TwoOnly 的参与者 A/B、临时 Offer 发起方等应用语义，也看不到 AES-GCM 加密后的聊天正文。排查时要记录准确测试时间；如果后续为凭证签发加入不含隐私的 `customIdentifier`，会更容易将一次会话与服务端指标对应起来。
+重新握手依赖 Supabase 恢复。如果 DataChannel 断了且 Realtime WebSocket 仍不可达，点击“立即重连”也无法交换新的 Offer/Answer/ICE。
 
-## 为什么连接会反复“正在自动重连”？
+### 4.3 为什么同一 Wi‑Fi 能聊，换两个网络就失败？
 
-先按文案区分两类问题：
+同一局域网可能直接选中 `host` candidate，完全没有验证公网 NAT 穿透或 TURN。跨网络失败时依次确认：
 
-- “信令服务暂时中断”：Supabase Realtime WebSocket 没有就绪。已经打开的 DataChannel 可以继续工作，但断线后无法重新交换 Offer/Answer/ICE。
-- “连接失败，正在自动重连”：PeerConnection 的直连和 TURN 候选都没建立，或已有路径持续失效。
+1. 两端都能订阅 Supabase Realtime；
+2. 两端各自收集到 `srflx` 或 `relay`；
+3. UDP、TCP、TLS 443 至少一种 TURN 传输可用；
+4. ICE 真正选中了 Candidate Pair；
+5. 双向字节持续增长。
 
-排查顺序建议固定为：网页与配置接口 → Supabase WebSocket → 两端 relay candidate → selected Candidate Pair → 双向字节 → Cloudflare Analytics。固定顺序比反复刷新页面更容易定位边界。
+### 4.4 TURN 能保证中国大陆稳定访问吗？
 
-## TURN 和信令服务器有什么区别？
+不能。完整会话需要同时访问网页与凭据接口、Supabase Realtime WebSocket、STUN/TURN 节点和最终选中的 WebRTC 路径。Cloudflare TURN 只能提高复杂 NAT 下的成功率，不提供中国大陆网络 SLA。
 
-Supabase 信令负责让陌生的两个浏览器交换 Offer、Answer 和 ICE Candidate；TURN 在直连失败时搬运真正的 WebRTC 数据。一个像“交换联系方式”，一个像“电话无法直拨时提供中转线路”。
+正式稳定方案需要合规自有域名、境内或邻近区域静态托管、国内可达的信令服务、TCP/TLS 443 TURN，以及电信、联通、移动、教育网和公司网络的持续实测。
 
-因此可能出现：TURN 完全正常，但 Supabase 信令被拦截，双方连候选地址都没交换完成；也可能 Supabase 正常，双方一直收到握手消息，但 TURN 在当前网络不可达。
+## 5. 产品与安全边界
 
-## TURN 能保证中国大陆稳定访问吗？
+### 5.1 聊天记录为什么没有同步到新设备？
 
-不能单独保证。用户完成一次聊天，需要同时访问：
+历史以 AES-GCM 密文保存在每台设备的 `localStorage`。它能在同一浏览器刷新后恢复，但不会跨设备同步；双方离线时也没有服务器信箱。
 
-1. TwoOnly 网页、静态资源和 `/api/turn-credentials`；
-2. Supabase Realtime WebSocket；
-3. STUN/TURN 节点及其 UDP、TCP 或 TLS 端口；
-4. 对端选中的 WebRTC 路径。
+### 5.2 为什么不能公开完整邀请链接？
 
-Cloudflare TURN 可以提升复杂 NAT 下的成功率，但它不是中国大陆网络 SLA。要提高国内稳定性，需要使用合规域名和境内或邻近地区部署、准备可实测的 TCP/TLS 443 TURN、让信令靠近用户，并按移动/联通/电信以及家庭、蜂窝、公司网络建立测试矩阵。
+URL fragment 中包含会话秘密。fragment 通常不会随 HTTP 请求发送给服务器，但拿到完整链接的人仍可能加入会话并推导应用层密钥。应通过可信渠道分享，并在双方页面核对安全码。
 
-## 为什么同一 Wi-Fi 能聊，换成两个网络就失败？
+### 5.3 旧链接中的 `role=host` / `role=guest` 还有效吗？
 
-同一局域网可能直接使用 `host` candidate，根本没有验证公网 NAT 穿透或 TURN。跨网络失败时依次确认：
+不再决定连接行为。v2 新链接统一为 `?room=<id>#<secret>`；旧参数只用于迁移已有本地消息方向。双方都会发送 Hello，再由随机 `participantId` 选出本轮临时 Offer 发起方。
 
-- 两端是否都能访问 Supabase Realtime；
-- 两端是否各自收集到 `srflx` 或 `relay`；
-- TURN 的 UDP/TCP/TLS 哪一种能用；
-- 是否真正选中了候选对，而不是只有候选列表；
-- 双向字节是否增长。
+旧 URL 可解析不代表 v1/v2 信令互通。出现 `signal.protocol.legacy` 时，应让双方全部刷新到最新部署。
 
-## 为什么断网恢复后不能马上重连？
+### 5.4 第三个人为什么有时刷新后还能尝试进入？
 
-WebRTC 的 `disconnected` 可能只是短暂抖动，过早销毁连接反而会让两端进入不同协商轮次。TwoOnly 先等待 2.5 秒；原连接恢复就继续使用，持续失败才重新握手。重新握手还依赖 Supabase 信令恢复，因此极端网络下不会瞬间完成。
+“只允许两个人”当前由两端页面的运行时 peer lock 实现，不是服务端账号席位。DataChannel 已打开时，第三个页面会收到 `room-full`；只有旧 peer 已失败、关闭或长时间失联时，新页面才可能接替。
 
-## 聊天记录为什么没有同步到对方的新设备？
+如果三个页面几乎同时首次进入，可能因为消息到达顺序不同而先锁到不同对象。严格的双人身份需要服务端原子成员槽、一次性邀请核销、成员公钥与签名握手。
 
-记录以密文保存在每台设备的 `localStorage`，不是云端聊天数据库。它能在同一浏览器刷新后恢复，但不会跨设备同步；双方离线时也没有服务器信箱。这是当前隐私和实现复杂度之间的明确取舍。
+## 6. 标准化取证与验收
 
-## 完整邀请链接为什么不能公开？
+### 6.1 报障时最少提供什么？
 
-链接 fragment 中包含会话秘密。fragment 通常不会随 HTTP 请求发送到服务器，但拿到完整链接的人仍可能作为参与者加入，并可推导本次聊天的应用层密钥。应通过可信渠道分享，并在双方页面核对安全码。
+两端分别提供以下信息，缺一端只能得到猜测：
 
-## 旧链接里的 `role=host` / `role=guest` 还起作用吗？
+1. 精确测试时间、浏览器版本、设备与网络类型；
+2. 页面“复制日志”得到的脱敏日志；
+3. `/api/turn-credentials` 的状态码、耗时和 `requestId`，不要提供 credential；
+4. 是否出现 `signal.subscribed`、`hello.received`、`data.open`；
+5. selected Candidate Pair 的 candidate type、protocol 和双向字节；
+6. 如强制 relay，Cloudflare Analytics 对应时间段的 ingress/egress。
 
-不再决定连接行为。v2 的新链接统一为 `?room=<id>#<secret>`；旧链接仍可打开，以免已分享的地址和本机历史突然失效，但其中的 `role` 只用于迁移旧版 `author` 方向。两端都会发送 Hello，再由随机 participant ID 确定本轮临时 Offer 发起方。
+### 6.2 一份够用的验收清单
 
-这里兼容的是旧 URL 和本地历史，不代表 v1/v2 客户端信令互通。部署 protocol v2 后应让双方都刷新；如果日志出现 `signal.protocol.legacy`，说明房间里仍有旧页面。
-
-本地双标签测试也应打开同一条新链接。每个页面加载都会获得新的 participant ID，不需要手工把一个链接改成 host、另一个改成 guest。
-
-## 第三个人为什么有时刷新后又能尝试进入？
-
-“只允许两个人”目前由两个页面各自的运行时 peer lock 实现，不是服务端账号与成员系统。DataChannel 已打开时，第三个页面会被双方以 `room-full` 拒绝且不会因超时抢占。只有通道未打开，并且旧 Peer 已失败/关闭，或连续 10 秒没有旧 peer 信令时，新页面实例才可接替；页面全部关闭后也没有持久席位。
-
-收到 `room-full` 后，第三页会暂停发送 Hello 至少 5 秒再自动尝试，无需刷新；点击“立即重连”会清除这段退避。这个自动重试是为了让真正断开的旧页面能够被替换，不代表第三页可以抢走仍然打开的连接。正式成员控制仍需要服务端持久化成员公钥、一次性邀请核销和房间权限。
-
-还有一个原型边界：如果三个页面几乎同时首次进入，它们可能因信令到达顺序不同而先锁到不同对象，短时间内互相拒绝，当前没有服务端仲裁来保证自动选出同一对。验收时应保留两页、关闭多余页面并点一次“立即重连”；严格产品需要由服务端原子分配两个成员槽。
-
-## 一份够用的验收清单
-
-- [ ] 参与者 A、B 使用两台真实设备、两个不同网络，并打开同一条无角色邀请链接。
-- [ ] 双方日志都有 `hello.sent`、`hello.received` 与一致的 `peer.elected` 结果。
-- [ ] 临时 Offer 发起方与另一端分别走完 Offer/Answer，信令携带 protocol v2、双方 epoch 与同一 negotiation ID。
-- [ ] 打开第三个页面后，已有双人会话保持稳定，第三页收到 `rejected(room-full)`。
-- [ ] 两端 `/api/turn-credentials` 都返回成功。
-- [ ] 两端分别用 Trickle ICE 得到 relay candidate。
-- [ ] UDP、TCP、TLS 443 分开测过并记录结果。
-- [ ] 临时强制 `relay` 后，两端都建立连接。
-- [ ] 两端各发送文字、图片或语音，双向均成功。
-- [ ] WebRTC 内部统计显示选中的 relay Candidate Pair。
-- [ ] `bytesSent` 和 `bytesReceived` 在两端都增长。
+- [ ] 参与者 A、B 使用两台真实设备和两个不同网络，打开同一条无角色邀请链接。
+- [ ] 双方都有 `signal.subscribed`、`hello.sent`、`hello.received` 和一致的 `peer.elected`。
+- [ ] Offer/Answer 使用同一轮双方 epoch 与 negotiation ID。
+- [ ] 第三个页面收到 `rejected(room-full)`，已有会话保持稳定。
+- [ ] 两端凭据接口都成功，且各自通过 Trickle ICE 得到 relay candidate。
+- [ ] UDP、TCP、TLS 443 分别测试并记录结果。
+- [ ] 临时强制 `relay` 后，两端均出现 `data.open`。
+- [ ] 双方各发送文字和一张小图片，双向均成功。
+- [ ] selected Candidate Pair 含 relay，`bytesSent` 与 `bytesReceived` 均增长。
 - [ ] Cloudflare Analytics 同期出现连接与双向流量。
-- [ ] 断网再恢复后，两端能自动重新握手。
-- [ ] 测试完成后恢复 `iceTransportPolicy: all`。
+- [ ] 断网恢复后双方能重新握手。
+- [ ] 测试结束后把 `NEXT_PUBLIC_ICE_TRANSPORT_POLICY` 恢复为 `all` 并重新部署。
 
-## 继续阅读
+## 7. 继续阅读
 
 - [TURN 配置手册](turn-configuration.md)
 - [WebRTC、双工通道与加密](webrtc-security.md)
 - [Supabase、Vercel 与部署运维](deployment-operations.md)
+- [Supabase 不可达时的信令容灾方案](signaling-resilience.md)
 - [TwoOnly 项目复盘](project-retrospective.md)
-- [Cloudflare TURN 短时凭证](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
+- [Cloudflare TURN 短时凭据](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
 - [Cloudflare TURN Analytics](https://developers.cloudflare.com/realtime/turn/analytics/)
 - [Cloudflare TURN FAQ](https://developers.cloudflare.com/realtime/turn/faq/)
 - [MDN RTCIceCandidatePairStats](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceCandidatePairStats)

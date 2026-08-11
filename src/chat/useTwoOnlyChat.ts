@@ -157,7 +157,7 @@ export function useTwoOnlyChat() {
       session = createdSession;
       sessionRef.current = createdSession;
 
-      transport = createSignalTransport({
+      const createdTransport = createSignalTransport({
         roomId,
         onMessage: createdSession.handleSignal,
         onDiagnostic: diagnostics.report,
@@ -166,7 +166,14 @@ export function useTwoOnlyChat() {
           else createdSession.onSignalUnavailable();
         },
       });
-      transport.start();
+      if (!createdTransport) {
+        setConnection("disconnected");
+        setConnectionMode("信令服务未配置");
+        setNotice("缺少 Supabase Realtime 配置，当前部署无法建立跨设备连接。");
+        return;
+      }
+      transport = createdTransport;
+      createdTransport.start();
     });
 
     void Promise.all(

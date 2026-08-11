@@ -67,6 +67,5 @@ export const RTC_POLICY = {
 
 export const RESOURCE_NAMES = {
   roomPrefix: "twoonly:",
-  localSignalPrefix: "twoonly-signal:",
   dataChannel: "twoonly-messages",
 } as const;

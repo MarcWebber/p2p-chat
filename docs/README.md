@@ -20,13 +20,14 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 - [WebRTC、双工通道与加密](webrtc-security.md)：Offer/Answer、ICE、STUN/TURN、DataChannel、AES-GCM、分片、威胁边界。
 - [TURN 配置手册](turn-configuration.md)：托管服务和 Coturn 自建方式、端口、证书、Vercel 环境变量与验收。
 - [常见问题与网络排障 FAQ](faq.md)：TURN 可达性、两端状态不一致、重连、国内网络和常见产品边界。
+- [Supabase 不可达时的信令容灾方案](signaling-resilience.md)：双活信令、VPS Socket.IO 备用服务、去重、灰度与验收矩阵。
 - [Supabase、Vercel 与部署运维](deployment-operations.md)：环境变量、Supabase 配置、Vercel 部署、测试和国内访问方案。
 
 ## 一张图看懂
 
 ![TwoOnly 架构总览](assets/twoonly-architecture-overview.png)
 
-图片负责快速建立空间感，Mermaid 图负责表达精确时序；发生差异时，以源码和专题手册为准。
+图片负责快速建立空间感和排障顺序；发生差异时，以源码和专题手册为准。
 
 ## 当前实现摘要
 
@@ -34,7 +35,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 | --- | --- |
 | 前端 | Next.js 16、React 19、TypeScript 5 |
 | 实时数据 | WebRTC `RTCDataChannel`，可靠且按序 |
-| 信令 | Supabase Realtime Broadcast；无配置时回退到同浏览器 `BroadcastChannel` |
+| 信令 | Supabase Realtime Broadcast；属于必需配置，缺失时明确报告不可用 |
 | 协商协议 | protocol v2；双方 Hello，participant ID 确定临时 Offer 发起方，epoch + negotiation ID 隔离重连轮次 |
 | 应用层加密 | Web Crypto API，随机会话秘密经 SHA-256 导入为 AES-GCM 密钥，每条消息使用独立 12 字节 IV |
 | 历史记录 | 每台设备的 `localStorage`，仅保存 `{id, iv, data}` 密文，最多 200 条 |

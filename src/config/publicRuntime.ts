@@ -3,12 +3,12 @@ import { RTC_POLICY } from "@/src/config/policy";
 const commaSeparated = (value: string | undefined, fallback: readonly string[]) =>
   value?.split(",").map((item) => item.trim()).filter(Boolean) ?? [...fallback];
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim();
 
 export const PUBLIC_SIGNAL_CONFIG = supabaseUrl && supabaseKey
-  ? { enabled: true, url: supabaseUrl, key: supabaseKey } as const
-  : { enabled: false, url: null, key: null } as const;
+  ? { url: supabaseUrl, key: supabaseKey } as const
+  : null;
 
 const turnUrls = commaSeparated(process.env.NEXT_PUBLIC_TURN_URLS, []);
 const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;

@@ -46,8 +46,8 @@ NEXT_PUBLIC_SITE_URL=https://your-domain.example
 
 | 变量 | 必需 | 说明 |
 | --- | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | 跨设备必需 | Supabase Project URL |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | 跨设备必需 | 浏览器可公开的 publishable key |
+| `NEXT_PUBLIC_SUPABASE_URL` | 必需 | Supabase Project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | 必需 | 浏览器可公开的 publishable key |
 | `NEXT_PUBLIC_STUN_URLS` | 建议 | 逗号分隔；未设置时使用代码中的 Cloudflare/Google 默认值 |
 | `NEXT_PUBLIC_TURN_URLS` | 稳定生产建议 | 逗号分隔，可含 `turn:` 与 `turns:` 地址 |
 | `NEXT_PUBLIC_TURN_USERNAME` | 配置 TURN 时必需 | TURN 用户名 |
@@ -94,15 +94,11 @@ channel
 
 官方文档说明：客户端订阅后，Broadcast 通过 WebSocket 发送；公共频道允许未登录客户端订阅。参见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast) 与 [Realtime Concepts](https://supabase.com/docs/guides/realtime/concepts)。这也是当前 MVP 快速建连和严格身份控制之间的主要取舍。
 
-### 本地无 Supabase 模式
+### 缺少 Supabase 配置时
 
-如果两个 Supabase 变量为空，代码自动使用：
+Supabase 是当前产品唯一的信令传输。两个公开变量任一缺失时，客户端记录 `signal.config.missing`，并把连接标为信令不可用；不会静默切换到只能服务同一浏览器的本地通道。
 
-```ts
-new BroadcastChannel(`twoonly-signal:${roomId}`)
-```
-
-它只适合同一浏览器的两个标签页联调，不能跨设备、跨浏览器或跨网络。
+本地开发也应配置测试 Supabase 项目，让开发、跨设备测试和生产使用同一条信令路径。这样本地成功才至少覆盖真实的 Realtime 订阅与消息投递，而不是只验证页面内逻辑。
 
 ## 5. Vercel 部署
 
@@ -158,6 +154,8 @@ NEXT_PUBLIC_TURN_CREDENTIAL=<短时凭证>
 3. 把信令服务部署到大陆可稳定访问的 WebSocket 服务；可继续用 Broadcast 模型，但不要依赖单一海外域名。
 4. 在大陆及邻近区域部署 TURN，开放 UDP/TCP/TLS 443，并使用短时凭证。
 5. 建立中国电信、联通、移动和教育网的真实探测与连接成功率监控。
+
+若要避免单一 Supabase 域名不可达时完全无法重新握手，后续可按 [信令容灾方案](signaling-resilience.md) 增加 VPS Socket.IO 备用通道。客户端应双通道同时订阅和发送，不能只让检测到故障的一端单独切换。
 
 Vercel 官方也明确给出面向中国访问时使用自定义域名和面向中国优化 CDN/托管方案的建议，参见 [Accessing Vercel-hosted sites from mainland China](https://vercel.com/kb/guide/accessing-vercel-hosted-sites-from-mainland-china)。需要使用中国大陆 CDN 节点时通常涉及 ICP 备案；可参考 [阿里云 ICP 备案说明](https://www.alibabacloud.com/help/en/icp-filing/basic-icp-service/user-guide/icp-filing-application-overview)。
 

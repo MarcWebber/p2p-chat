@@ -62,7 +62,7 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 | `src/chat` | 领域类型、React 状态和用例编排 | WebRTC/Supabase 的底层细节 |
 | `src/crypto` | 随机值、安全码、AES-GCM 加解密 | 保存历史、发送网络消息 |
 | `src/diagnostics` | 建连日志、脱敏、内存环形缓冲和 Console 输出 | 持久化日志、记录密钥或消息内容 |
-| `src/signal` | 信令类型校验、Supabase/BroadcastChannel 适配 | 聊天正文、PeerConnection 生命周期 |
+| `src/signal` | 信令类型校验与 Supabase Realtime 适配 | 聊天正文、PeerConnection 生命周期 |
 | `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和 ICE Server 规范化 | React UI、本地历史 |
 | `src/storage` | `localStorage` 密文历史、`sessionStorage` 本标签发送消息 ID | 加解密、Supabase Database/Storage |
 | `src/room` | 无角色邀请链接的解析、生成与旧链接兼容 | 连接状态机 |

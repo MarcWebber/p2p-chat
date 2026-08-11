@@ -12,6 +12,7 @@
 - [WebRTC、双工通道与加密](docs/webrtc-security.md)
 - [TURN 配置手册](docs/turn-configuration.md)
 - [常见问题与网络排障 FAQ](docs/faq.md)
+- [Supabase 不可达时的信令容灾方案](docs/signaling-resilience.md)
 - [Supabase、Vercel 与部署运维](docs/deployment-operations.md)
 
 ## 已实现
@@ -25,8 +26,7 @@
 - 大消息分片传输
 - 刷新后从本机密文恢复历史
 - 消息方向使用 `self / peer`，每个标签页用 `sessionStorage` 记录本端发送过的消息 ID
-- 无远程配置时，使用 `BroadcastChannel` 在同一浏览器双标签页联调
-- 配置 Supabase 后，使用 Realtime Broadcast 完成跨设备 WebRTC 信令
+- 使用 Supabase Realtime Broadcast 完成跨设备 WebRTC 信令；缺少配置时明确报错，不做本地伪降级
 - 连接中断后自动重新握手，并提供“立即重连”入口
 - 按 `chat / crypto / signal / webrtc / storage / room / media / ui` 划分职责，客户端入口不再承载业务细节
 
@@ -38,9 +38,9 @@ cp .env.example .env.local
 npm run dev
 ```
 
-打开首页创建房间，然后在另一个标签页打开邀请链接。
+配置 Supabase 后打开首页创建房间，再从第二个浏览器或设备打开邀请链接。
 
-## 开启跨设备连接
+## 配置信令服务
 
 在 Supabase 创建项目，从 Connect 面板取得 Project URL 和 publishable key，然后写入 `.env.local`：
 
