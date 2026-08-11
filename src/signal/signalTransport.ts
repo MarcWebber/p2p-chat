@@ -3,19 +3,19 @@ import { createClient } from "@supabase/supabase-js";
 import {
   diagnosticErrorDetails,
   sanitizeDiagnosticText,
+  type ConnectionDiagnosticEvent,
   type ConnectionDiagnosticSink,
 } from "@/src/diagnostics/connectionDiagnostics";
 import {
   isLegacySignalMessage,
   isSignalMessage,
   type SignalMessage,
-  type SignalStatus,
 } from "@/src/signal/types";
 
 type SignalTransportOptions = {
   roomId: string;
   onMessage: (message: SignalMessage) => void;
-  onStatus: (status: SignalStatus) => void;
+  onStatus: (status: "subscribed" | "unavailable") => void;
   onDiagnostic: ConnectionDiagnosticSink;
 };
 
@@ -25,36 +25,42 @@ export type SignalTransport = {
   dispose: () => void;
 };
 
-export function hasRemoteSignaling() {
-  return Boolean(
-    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-  );
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+export const REMOTE_SIGNALING_ENABLED = Boolean(SUPABASE_URL && SUPABASE_KEY);
+
+function signalTrace(type: SignalMessage["type"]) {
+  const stage = type === "hello"
+    ? "hello"
+    : type === "offer" || type === "answer"
+      ? "sdp"
+      : type === "candidate"
+        ? "ice"
+        : "signal";
+  return { stage, code: type === "hello" ? "hello" : `${stage}.${type}` } as const;
 }
 
-function negotiationTag(message: SignalMessage) {
-  return "negotiationId" in message ? message.negotiationId.slice(-6) : undefined;
-}
-
-function signalDetails(message: SignalMessage) {
+function signalDiagnostic(
+  message: SignalMessage,
+  direction: "sent" | "received",
+  local = false,
+): ConnectionDiagnosticEvent {
+  const { stage, code } = signalTrace(message.type);
+  const dedupe = message.type === "hello" || message.type === "candidate";
   return {
-    hasTarget: "to" in message && Boolean(message.to),
-    restart: message.type === "hello" ? message.restart : undefined,
-    localEpoch: message.fromEpoch,
-    remoteEpoch: "toEpoch" in message ? message.toEpoch : undefined,
-    negotiation: negotiationTag(message),
+    stage,
+    code: `${code}.${direction}`,
+    level: direction === "sent" && message.type === "hello" ? "success" : "info",
+    message: `${local ? "本地" : ""}${direction === "sent" ? "发送" : "收到"} ${message.type} 信令`,
+    details: {
+      hasTarget: "to" in message && Boolean(message.to),
+      restart: message.type === "hello" ? message.restart : undefined,
+      localEpoch: message.fromEpoch,
+      remoteEpoch: "toEpoch" in message ? message.toEpoch : undefined,
+      negotiation: "negotiationId" in message ? message.negotiationId.slice(-6) : undefined,
+    },
+    dedupeKey: dedupe ? `${local ? "local-" : ""}${message.type}-${direction}` : undefined,
   };
-}
-
-function signalStage(type: SignalMessage["type"]) {
-  if (type === "hello") return "hello" as const;
-  if (type === "offer" || type === "answer") return "sdp" as const;
-  if (type === "candidate") return "ice" as const;
-  return "signal" as const;
-}
-
-function signalCode(type: SignalMessage["type"]) {
-  if (type === "hello") return "hello";
-  return `${signalStage(type)}.${type}`;
 }
 
 function safeRealtimeMessage(kind: string, message: string) {
@@ -74,16 +80,32 @@ export function createSignalTransport({
   onStatus,
   onDiagnostic,
 }: SignalTransportOptions): SignalTransport {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  const receive = (value: unknown, local = false) => {
+    if (!isSignalMessage(value)) {
+      const legacy = isLegacySignalMessage(value);
+      onDiagnostic({
+        stage: "signal",
+        code: legacy ? "signal.protocol.legacy" : "signal.message.invalid",
+        level: legacy ? "error" : "warn",
+        message: legacy
+          ? local ? "检测到旧版本地信令，请刷新所有同房间页面" : "检测到旧版信令，请让双方刷新页面后重试"
+          : local ? "忽略了一条格式无效的本地信令消息" : "忽略了一条格式无效的信令消息",
+        dedupeKey: legacy ? `${local ? "legacy-local" : "legacy"}-signal` : `${local ? "invalid-local" : "invalid"}-signal`,
+      });
+      if (legacy) onStatus("unavailable");
+      return;
+    }
+    onDiagnostic(signalDiagnostic(value, "received", local));
+    onMessage(value);
+  };
 
-  if (supabaseUrl && supabaseKey) {
+  if (SUPABASE_URL && SUPABASE_KEY) {
     let disposed = false;
     let firstHealthyHeartbeatSeen = false;
     const signalStartedAt = Date.now();
     const providerHost = (() => {
       try {
-        return new URL(supabaseUrl).host;
+        return new URL(SUPABASE_URL).host;
       } catch {
         return "invalid-host";
       }
@@ -94,7 +116,7 @@ export function createSignalTransport({
       message: "已创建 Supabase Realtime 信令传输",
       details: { provider: "supabase", providerHost },
     });
-    const client = createClient(supabaseUrl, supabaseKey, {
+    const client = createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: false },
       realtime: {
         // Keep heartbeats out of the throttled main thread when the chat tab is in the background.
@@ -139,32 +161,7 @@ export function createSignalTransport({
     const channel = client.channel(`twoonly:${roomId}`, {
       config: { broadcast: { ack: true } },
     });
-    channel.on("broadcast", { event: "signal" }, ({ payload }) => {
-      if (!isSignalMessage(payload)) {
-        const legacy = isLegacySignalMessage(payload);
-        onDiagnostic({
-          stage: "signal",
-          code: legacy ? "signal.protocol.legacy" : "signal.message.invalid",
-          level: legacy ? "error" : "warn",
-          message: legacy
-            ? "检测到旧版信令，请让双方刷新页面后重试"
-            : "忽略了一条格式无效的信令消息",
-          dedupeKey: legacy ? "legacy-signal" : "invalid-signal",
-        });
-        if (legacy) onStatus("unavailable");
-        return;
-      }
-      const stage = signalStage(payload.type);
-      const code = signalCode(payload.type);
-      onDiagnostic({
-        stage,
-        code: `${code}.received`,
-        message: `收到 ${payload.type} 信令`,
-        details: signalDetails(payload),
-        dedupeKey: payload.type === "candidate" ? "candidate-received" : undefined,
-      });
-      onMessage(payload);
-    });
+    channel.on("broadcast", { event: "signal" }, ({ payload }) => receive(payload));
 
     return {
       start() {
@@ -205,19 +202,9 @@ export function createSignalTransport({
         });
       },
       send(message) {
-        const stage = signalStage(message.type);
-        const code = signalCode(message.type);
+        const { stage, code } = signalTrace(message.type);
         const sentAt = Date.now();
-        onDiagnostic({
-          stage,
-          code: `${code}.sent`,
-          level: message.type === "hello" ? "success" : "info",
-          message: `发送 ${message.type} 信令`,
-          details: signalDetails(message),
-          dedupeKey: message.type === "hello" || message.type === "candidate"
-            ? `${message.type}-sent`
-            : undefined,
-        });
+        onDiagnostic(signalDiagnostic(message, "sent"));
         void channel
           .send({ type: "broadcast", event: "signal", payload: message })
           .then((result) => {
@@ -261,32 +248,7 @@ export function createSignalTransport({
   }
 
   const channel = new BroadcastChannel(`twoonly-signal:${roomId}`);
-  channel.onmessage = (event: MessageEvent<unknown>) => {
-    if (!isSignalMessage(event.data)) {
-      const legacy = isLegacySignalMessage(event.data);
-      onDiagnostic({
-        stage: "signal",
-        code: legacy ? "signal.protocol.legacy" : "signal.message.invalid",
-        level: legacy ? "error" : "warn",
-        message: legacy
-          ? "检测到旧版本地信令，请刷新所有同房间页面"
-          : "忽略了一条格式无效的本地信令消息",
-        dedupeKey: legacy ? "legacy-local-signal" : "invalid-local-signal",
-      });
-      if (legacy) onStatus("unavailable");
-      return;
-    }
-    const stage = signalStage(event.data.type);
-    const code = signalCode(event.data.type);
-    onDiagnostic({
-      stage,
-      code: `${code}.received`,
-      message: `本地收到 ${event.data.type} 信令`,
-      details: signalDetails(event.data),
-      dedupeKey: event.data.type === "candidate" ? "local-candidate-received" : undefined,
-    });
-    onMessage(event.data);
-  };
+  channel.onmessage = (event: MessageEvent<unknown>) => receive(event.data, true);
   onDiagnostic({
     stage: "signal",
     code: "signal.transport.created",
@@ -306,18 +268,7 @@ export function createSignalTransport({
       onStatus("subscribed");
     },
     send(message) {
-      const stage = signalStage(message.type);
-      const code = signalCode(message.type);
-      onDiagnostic({
-        stage,
-        code: `${code}.sent`,
-        level: message.type === "hello" ? "success" : "info",
-        message: `本地发送 ${message.type} 信令`,
-        details: signalDetails(message),
-        dedupeKey: message.type === "hello" || message.type === "candidate"
-          ? `local-${message.type}-sent`
-          : undefined,
-      });
+      onDiagnostic(signalDiagnostic(message, "sent", true));
       channel.postMessage(message);
     },
     dispose() {

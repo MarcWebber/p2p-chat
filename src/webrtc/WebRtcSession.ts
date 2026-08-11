@@ -29,7 +29,7 @@ type SessionOptions = {
   onDiagnostic: ConnectionDiagnosticSink;
 };
 
-type Phase = "idle" | "discovering" | "negotiating" | "connected" | "full" | "disposed";
+type Phase = "discovering" | "negotiating" | "connected" | "full" | "disposed";
 type NegotiationSide = "offerer" | "answerer";
 type TraceOptions = Omit<ConnectionDiagnosticEvent, "stage" | "code" | "message">;
 
@@ -65,15 +65,7 @@ function negotiationTag(value: string | undefined) {
   return value?.slice(-6);
 }
 
-function candidateKey(signal: CandidateSignal) {
-  return `${signal.from}:${signal.fromEpoch}:${signal.toEpoch}:${signal.negotiationId}`;
-}
-
-function negotiationKey(peerId: string, negotiation: Negotiation) {
-  return `${peerId}:${negotiation.remoteEpoch}:${negotiation.localEpoch}:${negotiation.id}`;
-}
-
-export function electOfferer(localParticipantId: string, remoteParticipantId: string) {
+function electOfferer(localParticipantId: string, remoteParticipantId: string) {
   return localParticipantId < remoteParticipantId;
 }
 
@@ -81,7 +73,7 @@ export class WebRtcSession {
   private readonly wireAssembler = new EncryptedWireAssembler();
   private readonly pendingIce = new Map<string, RTCIceCandidateInit[]>();
   private readonly timers: Timers = {};
-  private phase: Phase = "idle";
+  private phase: Phase = "discovering";
   private peer: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
   private lock: PeerLock | null = null;
@@ -95,12 +87,6 @@ export class WebRtcSession {
   private signalQueue = Promise.resolve();
 
   constructor(private readonly options: SessionOptions) {}
-
-  start() {
-    if (this.phase === "disposed") return;
-    this.phase = "idle";
-    this.signalQueue = Promise.resolve();
-  }
 
   onSignalReady() {
     if (this.phase === "disposed") return;
@@ -127,7 +113,15 @@ export class WebRtcSession {
   handleSignal = (signal: SignalMessage) => {
     this.signalQueue = this.signalQueue
       .then(() => this.processSignal(signal))
-      .catch((error: unknown) => this.handleFailure(error));
+      .catch((error: unknown) => {
+        if (this.phase === "disposed") return;
+        this.trace("sdp", "sdp.negotiation.failed", "连接协商执行失败", {
+          level: "error",
+          details: diagnosticErrorDetails(error),
+        });
+        this.show("disconnected", "连接协商失败", "连接协商出现异常，正在自动重试。");
+        this.reconnect(true);
+      });
   };
 
   reconnect(automatic = false, delayMs = RECONNECT_DELAY_MS) {
@@ -176,9 +170,7 @@ export class WebRtcSession {
   dispose() {
     if (this.phase === "disposed") return;
     this.phase = "disposed";
-    this.stopAnnouncements();
-    this.clearTimer("reconnect");
-    this.clearTimer("signalWarning");
+    for (const name of Object.keys(this.timers) as Array<keyof Timers>) this.clearTimer(name);
     this.pendingIce.clear();
     this.wireAssembler.clear();
     this.closePeer();
@@ -186,20 +178,12 @@ export class WebRtcSession {
 
   private enableAnnouncements(immediate = true) {
     if (immediate) this.announce();
-    if (!this.timers.announce) {
-      this.timers.announce = window.setInterval(() => this.announce(), ANNOUNCE_INTERVAL_MS);
-    }
-  }
-
-  private stopAnnouncements() {
-    if (this.timers.announce) window.clearInterval(this.timers.announce);
-    delete this.timers.announce;
+    this.timers.announce ??= window.setInterval(() => this.announce(), ANNOUNCE_INTERVAL_MS);
   }
 
   private announce() {
     if (
-      this.phase === "idle"
-      || this.phase === "connected"
+      this.phase === "connected"
       || this.phase === "disposed"
       || Date.now() < this.rejectedUntil
     ) return;
@@ -347,7 +331,7 @@ export class WebRtcSession {
     if (this.phase === "disposed" || this.channel?.readyState !== "open") return;
     this.phase = "connected";
     this.rejectedUntil = 0;
-    this.stopAnnouncements();
+    this.clearTimer("announce");
     this.clearTimer("reconnect");
     this.clearTimer("signalWarning");
     this.signalWarningShown = false;
@@ -466,16 +450,11 @@ export class WebRtcSession {
       && active.localEpoch === this.localEpoch
       && active.remoteEpoch === lock.epoch;
     if (sameRound) {
-      const offer = this.peer?.localDescription;
-      if (offer?.type === "offer" && this.peer?.signalingState === "have-local-offer" && Date.now() - this.offerSentAt >= 1_000) {
-        this.sendSignal({
-          type: "offer",
-          to: lock.id,
-          toEpoch: active.remoteEpoch,
-          negotiationId: active.id,
-          payload: { type: offer.type, sdp: offer.sdp },
-        });
-        this.offerSentAt = Date.now();
+      if (
+        this.peer?.signalingState === "have-local-offer"
+        && Date.now() - this.offerSentAt >= 1_000
+        && this.sendLocalDescription(this.peer, active)
+      ) {
         this.trace("sdp", "sdp.offer.resent", "重复 Hello 命中当前协商，重新发送 Offer", {
           details: { negotiation: negotiationTag(active.id) },
         });
@@ -503,16 +482,7 @@ export class WebRtcSession {
     });
     await peer.setLocalDescription(offer);
     if (!this.isCurrent(peer, negotiation)) return;
-    const local = peer.localDescription;
-    if (local?.type !== "offer") throw new Error("local offer unavailable");
-    this.sendSignal({
-      type: "offer",
-      to: lock.id,
-      toEpoch: lock.epoch,
-      negotiationId: negotiation.id,
-      payload: { type: local.type, sdp: local.sdp },
-    });
-    this.offerSentAt = Date.now();
+    if (!this.sendLocalDescription(peer, negotiation)) throw new Error("local offer unavailable");
   }
 
   private async handleOffer(signal: OfferSignal) {
@@ -534,15 +504,7 @@ export class WebRtcSession {
       && active.localEpoch === this.localEpoch
       && active.remoteEpoch === signal.fromEpoch;
     if (duplicate) {
-      const answer = this.peer?.localDescription;
-      if (answer?.type === "answer") {
-        this.sendSignal({
-          type: "answer",
-          to: signal.from,
-          toEpoch: signal.fromEpoch,
-          negotiationId: signal.negotiationId,
-          payload: { type: answer.type, sdp: answer.sdp },
-        });
+      if (this.sendLocalDescription(this.peer, active)) {
         this.trace("sdp", "sdp.answer.resent", "重复 Offer 命中当前协商，重新发送 Answer");
       }
       return;
@@ -569,15 +531,7 @@ export class WebRtcSession {
     });
     await peer.setLocalDescription(answer);
     if (!this.isCurrent(peer, negotiation)) return;
-    const local = peer.localDescription;
-    if (local?.type !== "answer") throw new Error("local answer unavailable");
-    this.sendSignal({
-      type: "answer",
-      to: signal.from,
-      toEpoch: signal.fromEpoch,
-      negotiationId: signal.negotiationId,
-      payload: { type: local.type, sdp: local.sdp },
-    });
+    if (!this.sendLocalDescription(peer, negotiation)) throw new Error("local answer unavailable");
   }
 
   private async handleAnswer(signal: AnswerSignal) {
@@ -624,24 +578,11 @@ export class WebRtcSession {
       this.storePendingIce(signal);
       return;
     }
-    try {
-      await this.peer.addIceCandidate(signal.payload);
-      const summary = describeCandidate(signal.payload);
-      this.trace("ice", "ice.candidate.added", "已添加当前协商轮次的远端 ICE Candidate", {
-        details: summary,
-        dedupeKey: `candidate-added-${summary.candidateType}-${summary.protocol}`,
-      });
-    } catch (error: unknown) {
-      this.trace("ice", "ice.candidate.rejected", "浏览器拒绝了一条远端 ICE Candidate", {
-        level: "warn",
-        details: diagnosticErrorDetails(error),
-        dedupeKey: "candidate-add-rejected",
-      });
-    }
+    await this.addIceCandidate(this.peer, signal.payload);
   }
 
   private storePendingIce(signal: CandidateSignal) {
-    const key = candidateKey(signal);
+    const key = `${signal.from}:${signal.fromEpoch}:${signal.toEpoch}:${signal.negotiationId}`;
     let candidates = this.pendingIce.get(key);
     if (!candidates) {
       while (this.pendingIce.size >= MAX_PENDING_NEGOTIATIONS) {
@@ -662,20 +603,47 @@ export class WebRtcSession {
   private async flushPendingIce(negotiation: Negotiation, peer: RTCPeerConnection) {
     const lock = this.lock;
     if (!lock || !peer.remoteDescription) return;
-    const key = negotiationKey(lock.id, negotiation);
+    const key = `${lock.id}:${negotiation.remoteEpoch}:${negotiation.localEpoch}:${negotiation.id}`;
     const candidates = this.pendingIce.get(key);
     if (!candidates) return;
     this.pendingIce.delete(key);
-    for (const candidate of candidates) {
-      try {
-        await peer.addIceCandidate(candidate);
-      } catch (error: unknown) {
-        this.trace("ice", "ice.candidate.rejected", "浏览器拒绝了一条暂存 Candidate", {
-          level: "warn",
-          details: diagnosticErrorDetails(error),
-          dedupeKey: "pending-candidate-rejected",
-        });
-      }
+    for (const candidate of candidates) await this.addIceCandidate(peer, candidate);
+  }
+
+  private sendLocalDescription(peer: RTCPeerConnection | null, negotiation: Negotiation) {
+    const description = peer?.localDescription;
+    const lock = this.lock;
+    const type = negotiation.side === "offerer" ? "offer" : "answer";
+    if (!lock || description?.type !== type) return false;
+    const route = {
+      to: lock.id,
+      toEpoch: negotiation.remoteEpoch,
+      negotiationId: negotiation.id,
+      payload: { type: description.type, sdp: description.sdp },
+    };
+    if (description.type === "offer") {
+      this.sendSignal({ type: "offer", ...route });
+      this.offerSentAt = Date.now();
+    } else {
+      this.sendSignal({ type: "answer", ...route });
+    }
+    return true;
+  }
+
+  private async addIceCandidate(peer: RTCPeerConnection, candidate: RTCIceCandidateInit) {
+    try {
+      await peer.addIceCandidate(candidate);
+      const summary = describeCandidate(candidate);
+      this.trace("ice", "ice.candidate.added", "已添加当前协商轮次的远端 ICE Candidate", {
+        details: summary,
+        dedupeKey: `candidate-added-${summary.candidateType}-${summary.protocol}`,
+      });
+    } catch (error: unknown) {
+      this.trace("ice", "ice.candidate.rejected", "浏览器拒绝了一条远端 ICE Candidate", {
+        level: "warn",
+        details: diagnosticErrorDetails(error),
+        dedupeKey: "candidate-add-rejected",
+      });
     }
   }
 
@@ -731,9 +699,9 @@ export class WebRtcSession {
     return this.phase !== "disposed" && this.peer === peer && this.negotiation === negotiation;
   }
 
-  private clearTimer(name: "reconnect" | "signalWarning") {
+  private clearTimer(name: keyof Timers) {
     const timer = this.timers[name];
-    if (timer) window.clearTimeout(timer);
+    if (timer !== undefined) window.clearTimeout(timer);
     delete this.timers[name];
   }
 
@@ -746,13 +714,4 @@ export class WebRtcSession {
     this.options.onDiagnostic({ stage, code, message, ...options });
   }
 
-  private handleFailure(error: unknown) {
-    if (this.phase === "disposed") return;
-    this.trace("sdp", "sdp.negotiation.failed", "连接协商执行失败", {
-      level: "error",
-      details: diagnosticErrorDetails(error),
-    });
-    this.show("disconnected", "连接协商失败", "连接协商出现异常，正在自动重试。");
-    this.reconnect(true);
-  }
 }

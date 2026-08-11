@@ -1,26 +1,13 @@
-type CandidateLike = RTCIceCandidateInit & {
-  type?: string;
-  protocol?: string;
-  relayProtocol?: string;
-  tcpType?: string;
-};
+type CandidateLike = RTCIceCandidateInit
+  & Partial<Pick<RTCIceCandidate, "type" | "protocol" | "tcpType">>
+  & { relayProtocol?: string };
 
-type Stat = {
-  id: string;
-  type: string;
-  state?: string;
-  nominated?: boolean;
-  selected?: boolean;
-  selectedCandidatePairId?: string;
-  localCandidateId?: string;
-  remoteCandidateId?: string;
+type CandidateStats = RTCStats & {
   candidateType?: string;
   protocol?: string;
   relayProtocol?: string;
-  bytesSent?: number;
-  bytesReceived?: number;
-  currentRoundTripTime?: number;
 };
+type CandidatePairStats = RTCIceCandidatePairStats & { selected?: boolean };
 
 export function describeCandidate(value: RTCIceCandidate | RTCIceCandidateInit) {
   const candidate = value as CandidateLike;
@@ -37,25 +24,25 @@ export function describeCandidate(value: RTCIceCandidate | RTCIceCandidateInit) 
 
 export async function inspectConnectionPath(peer: RTCPeerConnection) {
   const stats = await peer.getStats();
-  let pair: Stat | undefined;
-  let nominated: Stat | undefined;
+  let pair: CandidatePairStats | undefined;
+  let nominated: CandidatePairStats | undefined;
   let selectedPairId = "";
 
   stats.forEach((raw) => {
-    const stat = raw as Stat;
-    if (stat.type === "transport" && stat.selectedCandidatePairId) {
-      selectedPairId = stat.selectedCandidatePairId;
-    } else if (stat.type === "candidate-pair") {
+    if (raw.type === "transport") {
+      selectedPairId = (raw as RTCTransportStats).selectedCandidatePairId ?? selectedPairId;
+    } else if (raw.type === "candidate-pair") {
+      const stat = raw as CandidatePairStats;
       if (stat.selected) pair = stat;
       else if (stat.nominated && stat.state === "succeeded") nominated = stat;
     }
   });
 
-  pair = (selectedPairId ? stats.get(selectedPairId) as Stat | undefined : pair) ?? nominated;
+  pair = (selectedPairId ? stats.get(selectedPairId) as CandidatePairStats | undefined : pair) ?? nominated;
   if (!pair?.localCandidateId || !pair.remoteCandidateId) return { mode: "unknown" as const };
 
-  const local = stats.get(pair.localCandidateId) as Stat | undefined;
-  const remote = stats.get(pair.remoteCandidateId) as Stat | undefined;
+  const local = stats.get(pair.localCandidateId) as CandidateStats | undefined;
+  const remote = stats.get(pair.remoteCandidateId) as CandidateStats | undefined;
   return {
     mode: local?.candidateType === "relay" || remote?.candidateType === "relay"
       ? "relay" as const

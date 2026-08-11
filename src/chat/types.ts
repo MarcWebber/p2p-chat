@@ -2,7 +2,7 @@ export type ConnectionState = "waiting" | "connecting" | "connected" | "disconne
 
 export type MessageKind = "text" | "image" | "audio";
 
-export type MessageAuthor = "self" | "peer";
+type MessageAuthor = "self" | "peer";
 
 export type LegacyRole = "host" | "guest";
 

@@ -119,7 +119,7 @@ https://站点/?room=<roomId>#<secret>
 - 未完成消息分片、输入框和当前消息列表；
 - 连接模式和提示状态。
 
-`WebRtcSession` 现在使用单一 `phase`（idle / discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。对端身份收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连或换届时通过一个入口清理 Peer、协商和 Candidate 缓存。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
+`WebRtcSession` 现在使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。实例创建后已经具备发现能力，信令就绪才启动 Hello 定时器，因此不再保留没有独立行为的 `idle` 和空 `start()`。对端身份收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连或换届时通过一个入口清理 Peer、协商和 Candidate 缓存。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
 
 诊断日志统一经过 `trace(stage, code, message, options)`，连接状态和用户提示统一经过 `show(...)`。这两个入口保留了完整排障证据链，但删除了散落在主流程里的重复日志对象。Candidate 解析和最终 Candidate Pair 统计移到纯函数模块 `rtcStats.ts`，不再挤占会话状态机。
 
@@ -136,7 +136,7 @@ twoonly/
 │   ├── layout.tsx                  # 元数据和根布局
 │   └── page.tsx                    # 首页入口
 ├── components/
-│   └── TwoOnlyApp.tsx              # 10 行客户端入口
+│   └── TwoOnlyApp.tsx              # 客户端入口与首页/聊天页分流
 ├── src/
 │   ├── chat/
 │   │   ├── types.ts                # 聊天领域类型
@@ -158,7 +158,6 @@ twoonly/
 │   ├── storage/
 │   │   └── chatStorage.ts          # 密文历史与本标签发送消息 ID
 │   ├── ui/
-│   │   ├── TwoOnlyView.tsx         # 页面状态分流
 │   │   ├── LandingScreen.tsx       # 首页与 Wiki
 │   │   ├── ChatScreen.tsx          # 聊天页组合
 │   │   ├── ChatHeader.tsx          # 状态与房间操作

@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const trackedFiles = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" })
   .split("\0")
-  .filter(Boolean);
+  .filter((file) => file && existsSync(path.join(root, file)));
 const textExtensions = new Set([".ts", ".tsx", ".css", ".md", ".json", ".mjs", ".yml", ".yaml", ".env", ".example"]);
 const codeExtensions = new Set([".ts", ".tsx", ".css", ".mjs"]);
 

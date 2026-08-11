@@ -32,7 +32,7 @@ const STATIC_ICE_CONFIGURATION: RTCConfiguration = {
   iceTransportPolicy,
 };
 
-export type ResolvedIceConfiguration = {
+type ResolvedIceConfiguration = {
   configuration: RTCConfiguration;
   turnConfigured: boolean;
 };
@@ -65,13 +65,6 @@ function normalizeIceServer(value: unknown): RTCIceServer | null {
     ...(server.username ? { username: server.username } : {}),
     ...(server.credential ? { credential: server.credential } : {}),
   };
-}
-
-function includesTurn(servers: RTCIceServer[]) {
-  return servers.some((server) => {
-    const urls = typeof server.urls === "string" ? [server.urls] : server.urls;
-    return urls.some((url) => url.startsWith("turn:") || url.startsWith("turns:"));
-  });
 }
 
 function summarizeIceServers(servers: RTCIceServer[]) {
@@ -139,7 +132,8 @@ export async function resolveIceConfiguration(
       const servers = Array.isArray(payload?.iceServers)
         ? payload.iceServers.map(normalizeIceServer).filter((server): server is RTCIceServer => Boolean(server))
         : [];
-      if (servers.length && includesTurn(servers)) {
+      const summary = summarizeIceServers(servers);
+      if (servers.length && summary.turnUrlCount) {
         const expiresAt = typeof payload?.expiresAt === "number" ? payload.expiresAt : undefined;
         const requestId = typeof payload?.requestId === "string" ? payload.requestId : responseRequestId;
         onDiagnostic?.({
@@ -152,7 +146,7 @@ export async function resolveIceConfiguration(
             durationMs,
             requestId,
             expiresInMinutes: expiresAt ? Math.max(0, Math.round((expiresAt - Date.now()) / 60_000)) : undefined,
-            ...summarizeIceServers(servers),
+            ...summary,
           },
         });
         onDiagnostic?.({

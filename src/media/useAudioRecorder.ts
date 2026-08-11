@@ -36,7 +36,7 @@ export function useAudioRecorder({ sessionKey, onAudio, onNotice }: AudioRecorde
 
   useEffect(() => cancelRecording, [cancelRecording, sessionKey]);
 
-  const startRecording = useCallback(async () => {
+  const startRecording = async () => {
     try {
       const startedInSession = sessionKeyRef.current;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -75,11 +75,11 @@ export function useAudioRecorder({ sessionKey, onAudio, onNotice }: AudioRecorde
     } catch {
       onNoticeRef.current("无法使用麦克风，请在浏览器设置中允许录音权限。");
     }
-  }, []);
+  };
 
-  const stopRecording = useCallback(() => {
+  const stopRecording = () => {
     if (recorderRef.current?.state === "recording") recorderRef.current.stop();
-  }, []);
+  };
 
   return { isRecording, startRecording, stopRecording, cancelRecording };
 }

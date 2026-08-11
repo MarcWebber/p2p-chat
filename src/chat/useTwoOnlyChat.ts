@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import type {
   ChatMessage,
@@ -13,7 +13,7 @@ import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
 import { MAX_FILE_BYTES, readAsDataUrl } from "@/src/media/files";
 import { useAudioRecorder } from "@/src/media/useAudioRecorder";
 import { createRoomInvitation, createRoomUrl, readRoomInvitation } from "@/src/room/invitation";
-import { createSignalTransport, hasRemoteSignaling, type SignalTransport } from "@/src/signal/signalTransport";
+import { createSignalTransport, REMOTE_SIGNALING_ENABLED, type SignalTransport } from "@/src/signal/signalTransport";
 import {
   clearEncryptedHistory,
   loadEncryptedHistory,
@@ -38,6 +38,15 @@ function normalizeStoredMessage(
   };
 }
 
+function saveEncryptedMessage(roomId: string, wire: EncryptedWire) {
+  try {
+    persistEncryptedMessage(roomId, wire);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function useTwoOnlyChat() {
   const [roomId, setRoomId] = useState("");
   const [secret, setSecret] = useState("");
@@ -53,25 +62,10 @@ export function useTwoOnlyChat() {
   const [diagnostics] = useState(() => new ConnectionDiagnostics());
 
   const sessionRef = useRef<WebRtcSession | null>(null);
-  const transportRef = useRef<SignalTransport | null>(null);
   const messageCryptoRef = useRef<MessageCrypto | null>(null);
   const copyTimerRef = useRef<number | undefined>(undefined);
 
-  const updateConnection = useCallback((state: ConnectionState, mode: string) => {
-    setConnection(state);
-    setConnectionMode(mode);
-  }, []);
-
-  const persistWire = useCallback((wire: EncryptedWire) => {
-    if (!roomId) return;
-    try {
-      persistEncryptedMessage(roomId, wire);
-    } catch {
-      setNotice("本地空间不足，这条大文件消息没有写入历史记录。");
-    }
-  }, [roomId]);
-
-  const sendMessage = useCallback(async (kind: MessageKind, content: string, fileName?: string) => {
+  const sendMessage = async (kind: MessageKind, content: string, fileName?: string) => {
     const messageCrypto = messageCryptoRef.current;
     if (!roomId || !messageCrypto) return;
     const message: ChatMessage = {
@@ -84,21 +78,18 @@ export function useTwoOnlyChat() {
     };
     markMessageAsSent(roomId, message.id);
     const wire = await messageCrypto.encrypt(message);
-    persistWire(wire);
+    if (!saveEncryptedMessage(roomId, wire)) {
+      setNotice("本地空间不足，这条大文件消息没有写入历史记录。");
+    }
     setMessages((current) => [...current, message]);
     if (!sessionRef.current?.send(wire)) {
       setNotice("消息已加密保存在本机；对方连接后发送的新消息会实时送达。");
     }
-  }, [persistWire, roomId]);
-
-  const sendAudio = useCallback(
-    (content: string) => sendMessage("audio", content, "语音消息"),
-    [sendMessage],
-  );
+  };
 
   const { isRecording, startRecording, stopRecording, cancelRecording } = useAudioRecorder({
     sessionKey: roomId,
-    onAudio: sendAudio,
+    onAudio: (content) => sendMessage("audio", content, "语音消息"),
     onNotice: setNotice,
   });
 
@@ -153,9 +144,7 @@ export function useTwoOnlyChat() {
         const decrypted = await messageCrypto.decrypt(wire);
         const message: ChatMessage = { ...decrypted, author: "peer" };
         if (!active) return;
-        try {
-          persistEncryptedMessage(roomId, wire);
-        } catch {
+        if (!saveEncryptedMessage(roomId, wire)) {
           setNotice("本地空间不足，这条大文件消息没有写入历史记录。");
         }
         setMessages((current) => current.some((item) => item.id === message.id)
@@ -175,7 +164,10 @@ export function useTwoOnlyChat() {
         turnConfigured,
         sendSignal: (message) => transport?.send(message),
         onWire: (wire) => void acceptWire(wire),
-        onConnectionChange: updateConnection,
+        onConnectionChange: (state, mode) => {
+          setConnection(state);
+          setConnectionMode(mode);
+        },
         onNotice: setNotice,
         onDiagnostic: diagnostics.report,
       });
@@ -191,8 +183,6 @@ export function useTwoOnlyChat() {
           else createdSession.onSignalUnavailable();
         },
       });
-      transportRef.current = transport;
-      createdSession.start();
       transport.start();
     });
 
@@ -228,11 +218,10 @@ export function useTwoOnlyChat() {
       });
       transport?.dispose();
       session?.dispose();
-      if (transportRef.current === transport) transportRef.current = null;
       if (sessionRef.current === session) sessionRef.current = null;
       if (messageCryptoRef.current === messageCrypto) messageCryptoRef.current = null;
     };
-  }, [diagnostics, legacyRole, participantId, roomId, secret, updateConnection]);
+  }, [diagnostics, legacyRole, participantId, roomId, secret]);
 
   const reconnect = useCallback(() => {
     diagnostics.report({
@@ -243,7 +232,6 @@ export function useTwoOnlyChat() {
     });
     sessionRef.current?.reconnect(false);
   }, [diagnostics]);
-  const clearNotice = useCallback(() => setNotice(""), []);
 
   useEffect(() => {
     window.addEventListener("online", reconnect);
@@ -264,14 +252,12 @@ export function useTwoOnlyChat() {
     if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
   }, []);
 
-  const inviteUrl = useMemo(() => {
-    if (!roomId || !secret || typeof window === "undefined") return "";
-    return createRoomUrl(window.location.origin, { roomId, secret });
-  }, [roomId, secret]);
+  const inviteUrl = roomId && secret && typeof window !== "undefined"
+    ? createRoomUrl(window.location.origin, { roomId, secret })
+    : "";
+  const safetyCode = secret ? createSafetyCode(secret) : "";
 
-  const safetyCode = useMemo(() => secret ? createSafetyCode(secret) : "", [secret]);
-
-  const createRoom = useCallback(() => {
+  const createRoom = () => {
     cancelRecording();
     sessionRef.current?.dispose();
     const invitation = createRoomInvitation();
@@ -292,22 +278,22 @@ export function useTwoOnlyChat() {
       message: "已创建新的无角色双人会话",
       details: { protocol: 2 },
     });
-  }, [cancelRecording, diagnostics]);
+  };
 
-  const createFreshRoom = useCallback(() => {
+  const createFreshRoom = () => {
     if (!window.confirm("创建新聊天将离开当前会话；已保存的记录仍保留在本机。继续吗？")) return;
     createRoom();
-  }, [createRoom]);
+  };
 
-  const submitText = useCallback((event: FormEvent) => {
+  const submitText = (event: FormEvent) => {
     event.preventDefault();
     const content = draft.trim();
     if (!content) return;
     setDraft("");
     void sendMessage("text", content);
-  }, [draft, sendMessage]);
+  };
 
-  const chooseImage = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+  const chooseImage = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -316,9 +302,9 @@ export function useTwoOnlyChat() {
       return;
     }
     await sendMessage("image", await readAsDataUrl(file), file.name);
-  }, [sendMessage]);
+  };
 
-  const copyInvite = useCallback(async () => {
+  const copyInvite = async () => {
     try {
       await navigator.clipboard.writeText(inviteUrl);
       setCopied(true);
@@ -327,9 +313,9 @@ export function useTwoOnlyChat() {
     } catch {
       setNotice("复制失败，请从浏览器地址栏复制完整邀请链接。");
     }
-  }, [inviteUrl]);
+  };
 
-  const clearLocalHistory = useCallback(() => {
+  const clearLocalHistory = () => {
     if (!messages.length) {
       setNotice("这台设备上还没有聊天记录。");
       return;
@@ -338,11 +324,11 @@ export function useTwoOnlyChat() {
     clearEncryptedHistory(roomId);
     setMessages([]);
     setNotice("这台设备上的加密历史已经清除。");
-  }, [messages.length, roomId]);
+  };
 
   return {
     ready,
-    hasRemoteSignaling: hasRemoteSignaling(),
+    hasRemoteSignaling: REMOTE_SIGNALING_ENABLED,
     inRoom: Boolean(roomId && secret),
     connection,
     connectionMode,
@@ -353,7 +339,7 @@ export function useTwoOnlyChat() {
     isRecording,
     safetyCode,
     setDraft,
-    clearNotice,
+    clearNotice: () => setNotice(""),
     createRoom,
     createFreshRoom,
     submitText,

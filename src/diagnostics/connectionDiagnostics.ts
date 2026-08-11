@@ -7,8 +7,8 @@ export type DiagnosticStage =
   | "ice"
   | "data";
 
-export type DiagnosticLevel = "info" | "success" | "warn" | "error";
-export type DiagnosticValue = string | number | boolean | null;
+type DiagnosticLevel = "info" | "success" | "warn" | "error";
+type DiagnosticValue = string | number | boolean | null;
 
 export type ConnectionDiagnosticEvent = {
   stage: DiagnosticStage;
@@ -28,7 +28,7 @@ export type ConnectionDiagnosticEntry = Omit<ConnectionDiagnosticEvent, "details
   dedupeKey?: string;
 };
 
-export type ConnectionDiagnosticsSnapshot = {
+type ConnectionDiagnosticsSnapshot = {
   revision: number;
   entries: readonly ConnectionDiagnosticEntry[];
 };
@@ -150,7 +150,12 @@ export class ConnectionDiagnostics {
 
     this.entries.push(entry);
     if (this.entries.length > MAX_ENTRIES) this.entries.splice(0, this.entries.length - MAX_ENTRIES);
-    this.scheduleNotify();
+    if (this.notifyTimer === undefined) {
+      this.notifyTimer = setTimeout(() => {
+        this.notifyTimer = undefined;
+        this.publish();
+      }, NOTIFY_DELAY_MS);
+    }
   };
 
   subscribe = (listener: () => void) => {
@@ -159,7 +164,6 @@ export class ConnectionDiagnostics {
   };
 
   getSnapshot = () => this.snapshot;
-  getServerSnapshot = () => this.snapshot;
 
   clear = () => {
     this.entries = [];
@@ -173,20 +177,6 @@ export class ConnectionDiagnostics {
     const repeat = entry.repeat > 1 ? ` x${entry.repeat}` : "";
     return `${new Date(entry.timestamp).toISOString()} +${entry.elapsedMs}ms [${entry.level}] [${entry.stage}] ${entry.code}${repeat} - ${entry.message}${details}`;
   }).join("\n");
-
-  dispose = () => {
-    if (this.notifyTimer !== undefined) clearTimeout(this.notifyTimer);
-    this.notifyTimer = undefined;
-    this.listeners.clear();
-  };
-
-  private scheduleNotify() {
-    if (this.notifyTimer !== undefined) return;
-    this.notifyTimer = setTimeout(() => {
-      this.notifyTimer = undefined;
-      this.publish();
-    }, NOTIFY_DELAY_MS);
-  }
 
   private publish() {
     this.snapshot = {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import type {
   ConnectionDiagnosticEntry,
@@ -61,25 +61,17 @@ function formatTime(timestamp: number) {
   });
 }
 
-function formatDetails(entry: ConnectionDiagnosticEntry) {
-  if (!entry.details) return "";
-  return Object.entries(entry.details).map(([key, value]) => `${key}=${value}`).join(" · ");
-}
-
 export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnosticsPanelProps) {
   const snapshot = useSyncExternalStore(
     diagnostics.subscribe,
     diagnostics.getSnapshot,
-    diagnostics.getServerSnapshot,
+    diagnostics.getSnapshot,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const copyTimerRef = useRef<number | undefined>(undefined);
   const entries = snapshot.entries;
   const latest = entries.at(-1);
-  const stageStatuses = useMemo(
-    () => STAGES.map((item) => ({ ...item, status: getStageStatus(entries, item.stage) })),
-    [entries],
-  );
+  const stageStatuses = STAGES.map((item) => ({ ...item, status: getStageStatus(entries, item.stage) }));
   const hasActiveError = stageStatuses.some((item) => item.status === "error");
   const visibleEntries = entries.slice(-60);
 
@@ -151,7 +143,9 @@ export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnostic
               <time>{formatTime(entry.timestamp)}</time>
               <code>{entry.stage}/{entry.code}</code>
               <span>{entry.message}{entry.repeat > 1 ? ` ×${entry.repeat}` : ""}</span>
-              {entry.details ? <small>{formatDetails(entry)}</small> : null}
+              {entry.details ? (
+                <small>{Object.entries(entry.details).map(([key, value]) => `${key}=${value}`).join(" · ")}</small>
+              ) : null}
             </li>
           )) : <li className="empty">暂无日志，请重新进入房间或点击立即重连。</li>}
         </ol>

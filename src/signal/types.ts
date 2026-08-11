@@ -34,7 +34,7 @@ export type CandidateSignal = NegotiationSignalBase & {
   payload: RTCIceCandidateInit;
 };
 
-export type RejectedSignal = SignalBase & {
+type RejectedSignal = SignalBase & {
   type: "rejected";
   to: string;
   toEpoch: number;
@@ -53,8 +53,6 @@ export type OutgoingSignal = SignalMessage extends infer Message
     ? Omit<Message, "protocol" | "from" | "fromEpoch">
     : never
   : never;
-
-export type SignalStatus = "subscribed" | "unavailable";
 
 function isPositiveEpoch(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;

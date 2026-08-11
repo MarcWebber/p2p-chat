@@ -2,7 +2,7 @@ import type { EncryptedWire } from "@/src/chat/types";
 
 const MAX_STORED_MESSAGES = 200;
 
-export function getMessageStorageKey(roomId: string) {
+function getMessageStorageKey(roomId: string) {
   return `twoonly:${roomId}:messages`;
 }
 

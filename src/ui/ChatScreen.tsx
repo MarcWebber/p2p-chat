@@ -1,34 +1,11 @@
-import type { ChatMessage, ConnectionState } from "@/src/chat/types";
-import type { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
+import type { TwoOnlyChatController } from "@/src/chat/useTwoOnlyChat";
 import { ChatHeader } from "@/src/ui/ChatHeader";
 import { ChatSidebar } from "@/src/ui/ChatSidebar";
 import { ConnectionDiagnosticsPanel } from "@/src/ui/ConnectionDiagnosticsPanel";
 import { MessageComposer } from "@/src/ui/MessageComposer";
 import { MessageList } from "@/src/ui/MessageList";
 
-type ChatScreenProps = {
-  connection: ConnectionState;
-  connectionMode: string;
-  messages: ChatMessage[];
-  draft: string;
-  notice: string;
-  copied: boolean;
-  isRecording: boolean;
-  safetyCode: string;
-  diagnostics: ConnectionDiagnostics;
-  setDraft: (draft: string) => void;
-  clearNotice: () => void;
-  createFreshRoom: () => void;
-  submitText: React.FormEventHandler<HTMLFormElement>;
-  chooseImage: React.ChangeEventHandler<HTMLInputElement>;
-  startRecording: () => void;
-  stopRecording: () => void;
-  copyInvite: () => void;
-  clearLocalHistory: () => void;
-  reconnect: () => void;
-};
-
-export function ChatScreen(props: ChatScreenProps) {
+export function ChatScreen(props: TwoOnlyChatController) {
   return (
     <main className="chat-shell">
       <ChatSidebar
