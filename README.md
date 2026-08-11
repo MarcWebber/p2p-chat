@@ -26,7 +26,7 @@
 - 大消息分片传输
 - 刷新后从本机密文恢复历史
 - 消息方向使用 `self / peer`，每个标签页用 `sessionStorage` 记录本端发送过的消息 ID
-- 使用 Supabase Realtime Broadcast 完成跨设备 WebRTC 信令；缺少配置时明确报错，不做本地伪降级
+- Supabase Realtime 与同源 Vercel HTTPS 双信令；任意一条可用即可握手，跨通道消息按 `signalId` 去重
 - 连接中断后自动重新握手，并提供“立即重连”入口
 - 按 `chat / crypto / signal / webrtc / storage / room / media / ui` 划分职责，客户端入口不再承载业务细节
 
@@ -49,7 +49,18 @@ NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 ```
 
-Supabase 只用于交换 SDP 和 ICE 信令，聊天内容不经过 Supabase。当前生产项目已经配置 Cloudflare TURN 短时凭证，直连失败时可切换到加密中继；自建部署仍应单独配置 TURN。
+Supabase 只用于主路径交换 SDP 和 ICE 信令，聊天内容不经过 Supabase；同一信令还会以密文进入 Vercel HTTPS 临时队列。当前生产项目已经配置 Cloudflare TURN 短时凭证，直连失败时可切换到加密中继；自建部署仍应单独配置 TURN。
+
+如需在客户端无法访问 Supabase 时继续握手，在 Vercel Marketplace 给项目连接一个 Upstash Redis。Marketplace 通常自动注入：
+
+```dotenv
+KV_REST_API_URL=https://YOUR_DATABASE.upstash.io
+KV_REST_API_TOKEN=xxx
+```
+
+手工配置时也可以改用等价的 `UPSTASH_REDIS_REST_URL` 与 `UPSTASH_REDIS_REST_TOKEN`；两组不需要同时存在。
+
+浏览器会同时使用 Supabase 和同源 `/api/signal`。HTTPS 队列中的 SDP/ICE 已使用邀请 fragment 派生的独立 AES-GCM 密钥加密，Redis 只保存最多 128 条、180 秒过期的临时密文信令。
 
 ## 部署到 Vercel
 

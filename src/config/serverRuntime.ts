@@ -12,4 +12,8 @@ export const SERVER_RUNTIME_CONFIG = {
     keyId: process.env.CLOUDFLARE_TURN_KEY_ID,
     apiToken: process.env.CLOUDFLARE_TURN_API_TOKEN,
   },
+  signalFallback: {
+    redisRestUrl: process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL,
+    redisRestToken: process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN,
+  },
 } as const;

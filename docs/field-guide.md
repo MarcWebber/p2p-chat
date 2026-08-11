@@ -15,8 +15,9 @@ TwoOnly 运行时有六类参与组件：
 | 组件 | 做什么 | 不做什么 |
 | --- | --- | --- |
 | 浏览器 A / B | UI、加解密、WebRTC、本地历史 | 不把聊天正文交给业务服务器 |
-| Vercel | 发网页、运行 TURN 临时凭证接口 | 不长期维持房间状态 |
-| Supabase Realtime | 交换 `hello / offer / answer / candidate` | 不转发聊天正文 |
+| Vercel | 发网页、运行 TURN 凭据接口和同源 HTTPS 降级信令 | 不保存聊天正文 |
+| Supabase Realtime | 主路径交换 `hello / offer / answer / candidate` | 不转发聊天正文 |
+| Redis Stream | 暂存 AES-GCM 密文信令，180 秒过期 | 不知道 fragment 密钥，不保存聊天正文 |
 | STUN | 告诉浏览器公网侧看到的地址 | 不转发聊天内容 |
 | TURN | 直连不通时中继 WebRTC 数据 | 不负责房间和消息历史 |
 | `localStorage` | 在当前设备保存 AES-GCM 密文 | 不做多设备同步 |
@@ -40,7 +41,7 @@ flowchart LR
   A <==>|"聊天密文：DataChannel"| B
 ```
 
-第一条是**信令链路**：让两端交换 SDP 和 ICE Candidate。WebRTC 规范故意没有规定信令必须怎么做，所以 WebSocket、Socket.IO、Supabase Broadcast、HTTP 轮询都可以。TwoOnly 选 Supabase，是为了省掉一个长期在线的自建服务。
+第一条是**信令链路**：让两端交换 SDP 和 ICE Candidate。WebRTC 规范故意没有规定信令必须怎么做，所以 WebSocket、Socket.IO、Supabase Broadcast、HTTP 轮询都可以。TwoOnly 以 Supabase 为主，同时使用 Vercel 同源 HTTPS + Redis Stream 降级；双方双发双收，避免单边切换后落进两个不同信令网络。
 
 第二条是**路径发现链路**：ICE 调用 STUN/TURN，收集和测试候选路径。信令服务器不会替浏览器“打洞”。
 
@@ -56,7 +57,7 @@ TwoOnly v2 不再给用户分配固定房主/访客角色。每次页面加载�
 sequenceDiagram
   autonumber
   participant A as 浏览器 A
-  participant S as Supabase Realtime
+  participant S as 双活信令聚合器
   participant B as 浏览器 B
   participant I as STUN / TURN
 
@@ -96,7 +97,7 @@ sequenceDiagram
 - 所有信令串进同一条 Promise 队列，避免两个异步分支同时修改 `signalingState`；
 - 重复 Offer 不一定是错误，网络重试时可以重发已经生成的 Answer。
 
-这些保护都集中在 `src/webrtc/WebRtcSession.ts`，而 Supabase 适配器只负责收发和校验消息，不参与 PeerConnection 状态机。
+这些保护都集中在 `src/webrtc/WebRtcSession.ts`；`src/signal/signalTransport.ts` 负责 Supabase/HTTPS 双发与 `signalId` 去重，各 provider 只负责自己的收发和健康状态，不参与 PeerConnection 状态机。
 
 ## ICE、STUN 和 TURN：谁才是在“打洞”
 

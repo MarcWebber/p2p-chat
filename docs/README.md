@@ -1,6 +1,6 @@
 # TwoOnly 技术文档
 
-TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建并部署到 Vercel；Supabase Realtime 只负责让两个浏览器交换 WebRTC 建连所需的信令；文字、图片和语音经浏览器本地 AES-GCM 加密后，通过 WebRTC DataChannel 传输，并以密文保存在各自设备的 `localStorage`。
+TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建并部署到 Vercel；Supabase Realtime 与同源 Vercel HTTPS 共同交换 WebRTC 建连信令；文字、图片和语音经浏览器本地 AES-GCM 加密后，通过 WebRTC DataChannel 传输，并以密文保存在各自设备的 `localStorage`。
 
 ## 推荐阅读顺序
 
@@ -20,7 +20,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 - [WebRTC、双工通道与加密](webrtc-security.md)：Offer/Answer、ICE、STUN/TURN、DataChannel、AES-GCM、分片、威胁边界。
 - [TURN 配置手册](turn-configuration.md)：托管服务和 Coturn 自建方式、端口、证书、Vercel 环境变量与验收。
 - [常见问题与网络排障 FAQ](faq.md)：TURN 可达性、两端状态不一致、重连、国内网络和常见产品边界。
-- [Supabase 不可达时的信令容灾方案](signaling-resilience.md)：双活信令、VPS Socket.IO 备用服务、去重、灰度与验收矩阵。
+- [Supabase 不可达时的信令容灾方案](signaling-resilience.md)：Supabase + Vercel HTTPS 双活信令、Redis Stream、去重和验收矩阵。
 - [Supabase、Vercel 与部署运维](deployment-operations.md)：环境变量、Supabase 配置、Vercel 部署、测试和国内访问方案。
 
 ## 一张图看懂
@@ -35,18 +35,18 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 | --- | --- |
 | 前端 | Next.js 16、React 19、TypeScript 5 |
 | 实时数据 | WebRTC `RTCDataChannel`，可靠且按序 |
-| 信令 | Supabase Realtime Broadcast；属于必需配置，缺失时明确报告不可用 |
+| 信令 | Supabase Realtime Broadcast + Vercel `/api/signal` HTTPS 短轮询；任意一条可用即可握手 |
 | 协商协议 | protocol v2；双方 Hello，participant ID 确定临时 Offer 发起方，epoch + negotiation ID 隔离重连轮次 |
 | 应用层加密 | Web Crypto API，随机会话秘密经 SHA-256 导入为 AES-GCM 密钥，每条消息使用独立 12 字节 IV |
 | 历史记录 | 每台设备的 `localStorage`，仅保存 `{id, iv, data}` 密文，最多 200 条 |
 | 消息类型 | 文字、图片、语音；图片/语音单条上限 1.5 MB |
 | 大消息处理 | 加密后 JSON 按 12,000 字符分片，在接收端重组并解密 |
-| 部署 | Vercel 静态页面与短时 Cloudflare TURN 凭证接口；Supabase 新加坡区提供 WebSocket 信令 |
+| 部署 | Vercel 页面、HTTPS 降级信令与 Cloudflare TURN 凭证接口；Supabase 提供主 WebSocket 信令 |
 
 ## 必须理解的边界
 
 - “P2P”指聊天负载优先由两个浏览器直接传输。若配置 TURN 且直连失败，数据会经过 TURN 中继，但仍由 WebRTC 传输层和应用层 AES-GCM 保护。
-- Supabase 看不到聊天正文，但会处理房间 topic、SDP、ICE Candidate 等建连元数据。
+- Supabase 看不到聊天正文，但会处理房间 topic、SDP、ICE Candidate 等建连元数据；Vercel HTTPS 队列只保存由邀请密钥加密后的临时信令。
 - 历史只在本机，双方离线时没有服务器信箱，也不会跨设备同步。
 - “只允许两个人”由双方页面内存中的运行时 peer lock 实现，不是账号或服务端身份系统；页面全部关闭后没有持久席位。
 - 拿到完整邀请链接的人拥有会话秘密，可能作为参与者加入。请通过可信渠道分享，并在双方页面核对安全码。

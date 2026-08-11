@@ -33,7 +33,7 @@ const STAGES: Array<{ stage: DiagnosticStage; label: string }> = [
 
 const SUCCESS_CODES: Partial<Record<DiagnosticStage, Set<string>>> = {
   credentials: new Set(["credentials.success", "credentials.ready"]),
-  signal: new Set(["signal.subscribed"]),
+  signal: new Set(["signal.route.dual", "signal.route.degraded"]),
   hello: new Set(["hello.sent", "hello.received"]),
   sdp: new Set(["sdp.answer.sent", "sdp.answer.applied"]),
   ice: new Set(["ice.connected", "ice.completed", "ice.selected_pair"]),
@@ -105,7 +105,7 @@ export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnostic
           ))}
         </div>
         <p className="diagnostics-expectation">
-          期望：凭据就绪 → 信令 SUBSCRIBED → 双方 Hello → 选举临时发起方 → Offer/Answer → ICE connected → DataChannel open
+          期望：凭据就绪 → 至少一条信令可用 → 双方 Hello → 选举临时发起方 → Offer/Answer → ICE connected → DataChannel open
         </p>
         <div className="diagnostics-actions">
           <span>Trace {diagnostics.traceId} · 日志已脱敏，仅保存在本页内存</span>

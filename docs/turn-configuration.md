@@ -216,4 +216,4 @@ turns:turn.example.com:443?transport=tcp
 
 ### 仍然无法保证中国大陆连接
 
-TURN 只能改善 WebRTC 穿透。网页、Supabase WebSocket、DNS 和 TURN 本身都必须在目标运营商网络可达。正式方案仍需自有域名、合规托管、就近信令与多运营商实测。
+TURN 只能改善 WebRTC 穿透。网页、Supabase 或 Vercel HTTPS 至少一条共同信令、DNS 和 TURN 本身都必须在目标运营商网络可达。正式方案仍需自有域名、合规托管、就近信令与多运营商实测。

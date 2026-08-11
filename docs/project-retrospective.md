@@ -13,7 +13,7 @@
 | 双人房间 | v2 无固定角色，双方互锁另一位参与者并拒绝第三页 |
 | 文字 / 图片 / 语音 | 已实现，媒体单条上限 1.5 MB |
 | 实时链路 | WebRTC DataChannel |
-| 信令 | Supabase Realtime Broadcast |
+| 信令 | Supabase Realtime + 同源 Vercel HTTPS 双路信令 |
 | NAT 穿透 | STUN + Cloudflare TURN 兜底 |
 | 应用加密 | AES-GCM，每条消息独立 IV |
 | 本地历史 | 每设备、每房间最多 200 条密文 |
@@ -30,6 +30,7 @@ timeline
   可维护 : 从大型单文件拆成 chat / crypto / signal / webrtc / storage / ui
   可恢复 : 增加 negotiationId、信令队列和自动重新握手
   可跨网 : 接入 Supabase Realtime 信令
+  可降级 : 增加 Vercel HTTPS + Redis Stream 密文信令
   可兜底 : 接入 Cloudflare TURN 短时凭证
   可部署 : 持久化 Vercel Production 环境变量并完成线上验收
   更对等 : protocol v2、双方 Hello、确定性 Offer 选举与 epoch 隔离
@@ -66,13 +67,13 @@ flowchart TD
 
 ### 1. 本地模拟能用，外部用户不能用
 
-早期实现曾为同浏览器双标签页保留 `BroadcastChannel` 信令。它绕开 Supabase，导致本地成功无法证明 Realtime WebSocket 或跨设备网络成立。这个 fallback 后来被完整删除；开发、测试和生产现在统一使用 Supabase 信令，配置缺失时直接报告错误。
+早期实现曾为同浏览器双标签页保留 `BroadcastChannel` 信令。它绕开 Supabase，导致本地成功无法证明 Realtime WebSocket 或跨设备网络成立。这个伪 fallback 后来被完整删除。项目先统一使用 Supabase，随后才增加真正可跨设备的同源 Vercel HTTPS 降级：浏览器把同一条信令双发到 Supabase 和 `/api/signal`，后者只把 AES-GCM 密文短暂写入 Redis Stream。
 
 跨设备需要至少三件事同时正确：
 
-1. Supabase URL 和 publishable key 进入生产构建；
-2. Realtime Channel 真正订阅成功；
-3. 两端网络能建立 WebSocket 并完成 ICE。
+1. Supabase Realtime 或 Vercel HTTPS 至少一条信令链路可用；
+2. 两端确实收到彼此的 Hello、Offer/Answer 和 ICE Candidate；
+3. ICE 最终选出可用 Candidate Pair 并打开 DataChannel。
 
 这次经验很直接：**本地页面能跑不是跨网络 E2E。**以后验收必须明确区分静态检查、双浏览器、不同设备、不同网络和生产环境。
 
@@ -158,6 +159,8 @@ flowchart LR
 
 - TypeScript 检查通过；
 - Next.js 生产构建通过；
+- 完全关闭 Supabase 配置后，两个浏览器仅通过 Vercel HTTPS 模拟端点完成握手；
+- HTTPS-only 模式下双向消息成功，单端刷新后自动重新握手并继续收发；
 - 参与者 A、B 在独立浏览器中强制使用 TURN，双方显示中继模式；
 - 加密测试消息成功到达对端；
 - 生产首页 HTTP 200；

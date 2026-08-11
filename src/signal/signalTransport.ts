@@ -1,39 +1,47 @@
-import { createClient } from "@supabase/supabase-js";
-
-import { RESOURCE_NAMES, SIGNAL_POLICY } from "@/src/config/policy";
+import { SIGNAL_POLICY } from "@/src/config/policy";
 import { PUBLIC_SIGNAL_CONFIG } from "@/src/config/publicRuntime";
 import {
   diagnosticErrorDetails,
-  sanitizeDiagnosticText,
   type ConnectionDiagnosticEvent,
   type ConnectionDiagnosticSink,
 } from "@/src/diagnostics/connectionDiagnostics";
+import { createHttpsSignalTransport } from "@/src/signal/httpsSignalTransport";
+import { createSupabaseSignalTransport } from "@/src/signal/supabaseSignalTransport";
 import {
   isLegacySignalMessage,
   isSignalMessage,
+  type RoutedSignalMessage,
   type SignalMessage,
+  type SignalProvider,
+  type SignalProviderName,
+  type SignalProviderState,
 } from "@/src/signal/types";
 import { shortId } from "@/src/utils/format";
 
 type SignalTransportOptions = {
   roomId: string;
+  participantId: string;
+  secret: string;
   onMessage: (message: SignalMessage) => void;
   onStatus: (status: "subscribed" | "unavailable") => void;
   onDiagnostic: ConnectionDiagnosticSink;
 };
 
-const SIGNAL_STAGES = { hello: "hello", offer: "sdp", answer: "sdp", candidate: "ice", rejected: "signal" } as const;
-
-function signalTrace(type: SignalMessage["type"]) {
-  const stage = SIGNAL_STAGES[type];
-  return { stage, code: type === "hello" ? "hello" : `${stage}.${type}` } as const;
-}
+const SIGNAL_STAGES = {
+  hello: "hello",
+  offer: "sdp",
+  answer: "sdp",
+  candidate: "ice",
+  rejected: "signal",
+} as const;
 
 function signalDiagnostic(
   message: SignalMessage,
   direction: "sent" | "received",
+  provider?: SignalProviderName,
 ): ConnectionDiagnosticEvent {
-  const { stage, code } = signalTrace(message.type);
+  const stage = SIGNAL_STAGES[message.type];
+  const code = message.type === "hello" ? "hello" : `${stage}.${message.type}`;
   const dedupe = message.type === "hello" || message.type === "candidate";
   return {
     stage,
@@ -41,34 +49,69 @@ function signalDiagnostic(
     level: direction === "sent" && message.type === "hello" ? "success" : "info",
     message: `${direction === "sent" ? "发送" : "收到"} ${message.type} 信令`,
     details: {
+      provider,
       hasTarget: "to" in message && Boolean(message.to),
       restart: message.type === "hello" ? message.restart : undefined,
       localEpoch: message.fromEpoch,
       remoteEpoch: "toEpoch" in message ? message.toEpoch : undefined,
       negotiation: "negotiationId" in message ? shortId(message.negotiationId) : undefined,
+      signal: shortId(message.signalId),
     },
-    dedupeKey: dedupe ? `${message.type}-${direction}` : undefined,
+    dedupeKey: dedupe ? `${message.type}-${direction}-${provider ?? "all"}` : undefined,
   };
-}
-
-function safeRealtimeMessage(kind: string, message: string) {
-  const lower = message.toLowerCase();
-  if (lower.includes("websocket connection failed")) return "WebSocket connection failed";
-  if (lower.includes("transport failure")) return "Realtime transport failure";
-  if (lower.includes("heartbeat timeout")) return "Realtime heartbeat timeout";
-  if (lower.startsWith("connected to")) return "WebSocket transport connected";
-  if (lower === "close" || lower.includes("transport close")) return "WebSocket transport closed";
-  if (lower === "error" || lower.includes("transport error")) return "WebSocket transport error";
-  return sanitizeDiagnosticText(`${kind}: ${message}`);
 }
 
 export function createSignalTransport({
   roomId,
+  participantId,
+  secret,
   onMessage,
   onStatus,
   onDiagnostic,
 }: SignalTransportOptions) {
-  const receive = (value: unknown) => {
+  const providers: SignalProvider[] = [];
+  const states = new Map<SignalProviderName, SignalProviderState>();
+  const seenSignals = new Set<string>();
+  let disposed = false;
+  let lastAvailable: boolean | undefined;
+  let lastMode = "";
+
+  const updateAggregateState = () => {
+    if (disposed || !states.size) return;
+    const ready = [...states].filter(([, state]) => state === "ready").map(([name]) => name);
+    const unavailable = [...states.values()].every((state) => state === "unavailable");
+    if (!ready.length && !unavailable) return;
+    const mode = ready.length === states.size ? "dual" : ready.length ? "degraded" : "unavailable";
+    if (mode !== lastMode) {
+      lastMode = mode;
+      onDiagnostic({
+        stage: "signal",
+        code: `signal.route.${mode}`,
+        level: mode === "dual" ? "success" : mode === "unavailable" ? "error" : "warn",
+        message: mode === "dual"
+          ? "Supabase 与 HTTPS 双信令均可用"
+          : mode === "degraded" ? "信令正在使用可用通道降级运行" : "所有信令通道当前均不可用",
+        details: { readyProviders: ready.join(",") || "none" },
+      });
+    }
+    const available = ready.length > 0;
+    if (available !== lastAvailable && (available || unavailable)) {
+      lastAvailable = available;
+      onStatus(available ? "subscribed" : "unavailable");
+    }
+  };
+
+  const providerOptions = (name: SignalProviderName) => ({
+    roomId,
+    onMessage: (value: unknown) => receive(name, value),
+    onState: (state: SignalProviderState) => {
+      states.set(name, state);
+      updateAggregateState();
+    },
+    onDiagnostic,
+  });
+
+  const receive = (provider: SignalProviderName, value: unknown) => {
     if (!isSignalMessage(value)) {
       const legacy = isLegacySignalMessage(value);
       onDiagnostic({
@@ -78,169 +121,80 @@ export function createSignalTransport({
         message: legacy
           ? "检测到旧版信令，请让双方刷新页面后重试"
           : "忽略了一条格式无效的信令消息",
-        dedupeKey: legacy ? "legacy-signal" : "invalid-signal",
+        details: { provider },
+        dedupeKey: legacy ? "legacy-signal" : `invalid-signal-${provider}`,
       });
-      if (legacy) onStatus("unavailable");
       return;
     }
-    onDiagnostic(signalDiagnostic(value, "received"));
+
+    if (value.signalId && seenSignals.has(value.signalId)) return;
+    if (value.signalId) {
+      if (seenSignals.size >= SIGNAL_POLICY.maxDedupeEntries) {
+        seenSignals.delete(seenSignals.values().next().value!);
+      }
+      seenSignals.add(value.signalId);
+    }
+    onDiagnostic(signalDiagnostic(value, "received", provider));
     onMessage(value);
   };
 
-  if (!PUBLIC_SIGNAL_CONFIG) {
+  let supabase: SignalProvider | null = null;
+  try {
+    supabase = createSupabaseSignalTransport(providerOptions("supabase"));
+  } catch (error: unknown) {
     onDiagnostic({
       stage: "signal",
-      code: "signal.config.missing",
-      level: "error",
-      message: "未配置 Supabase Realtime，无法创建跨设备信令",
+      code: "signal.supabase.create.failed",
+      level: "warn",
+      message: "Supabase 信令初始化失败，将继续尝试 HTTPS 降级信令",
+      details: { provider: "supabase", ...diagnosticErrorDetails(error) },
     });
-    return null;
   }
-
-  const { url, key } = PUBLIC_SIGNAL_CONFIG;
-  let disposed = false;
-  let firstHealthyHeartbeatSeen = false;
-  const signalStartedAt = Date.now();
-  const providerHost = (() => {
-    try {
-      return new URL(url).host;
-    } catch {
-      return "invalid-host";
-    }
-  })();
-  onDiagnostic({
-    stage: "signal",
-    code: "signal.transport.created",
-    message: "已创建 Supabase Realtime 信令传输",
-    details: { provider: "supabase", providerHost },
-  });
-  const client = createClient(url, key, {
-    auth: { persistSession: false },
-    realtime: {
-      // Keep heartbeats out of the throttled main thread when the chat tab is in the background.
-      worker: true,
-      heartbeatCallback(status, latency) {
-        if (status === "ok" && !firstHealthyHeartbeatSeen) {
-          firstHealthyHeartbeatSeen = true;
-          onDiagnostic({
-            stage: "signal",
-            code: "signal.heartbeat.ok",
-            level: "success",
-            message: "Realtime 首次心跳响应正常",
-            details: { latencyMs: latency },
-          });
-        }
-        if (!disposed && (status === "error" || status === "timeout")) {
-          onDiagnostic({
-            stage: "signal",
-            code: `signal.heartbeat.${status}`,
-            level: "error",
-            message: status === "timeout" ? "Realtime 心跳超时" : "Realtime 心跳失败",
-            details: { latencyMs: latency },
-          });
-          onStatus("unavailable");
-        }
-      },
-      logger(kind, message) {
-        if (disposed) return;
-        if (kind !== "transport" && kind !== "error") return;
-        const safeMessage = safeRealtimeMessage(kind, message);
-        const failed = /failed|failure|error|timeout|closed/i.test(safeMessage);
-        onDiagnostic({
-          stage: "signal",
-          code: failed ? "signal.transport.error" : "signal.transport.event",
-          level: failed ? "error" : "info",
-          message: safeMessage,
-          dedupeKey: `realtime-${kind}-${safeMessage}`,
-        });
-      },
-    },
-  });
-  const channel = client.channel(`${RESOURCE_NAMES.roomPrefix}${roomId}`, {
-    config: { broadcast: { ack: true } },
-  });
-  channel.on("broadcast", { event: SIGNAL_POLICY.realtimeEvent }, ({ payload }) => receive(payload));
+  if (supabase) providers.push(supabase);
+  else if (!PUBLIC_SIGNAL_CONFIG) {
+    onDiagnostic({
+      stage: "signal",
+      code: "signal.supabase.config.missing",
+      level: "warn",
+      message: "未配置 Supabase Realtime，将仅尝试 HTTPS 降级信令",
+    });
+  }
+  providers.push(createHttpsSignalTransport({
+    ...providerOptions("https"),
+    participantId,
+    secret,
+  }));
+  for (const provider of providers) states.set(provider.name, "connecting");
 
   return {
     start() {
       onDiagnostic({
         stage: "signal",
-        code: "signal.subscribe.start",
-        message: "开始订阅 Supabase Realtime 房间",
+        code: "signal.transport.created",
+        message: "已创建双通道信令传输",
+        details: {
+          supabaseConfigured: Boolean(PUBLIC_SIGNAL_CONFIG),
+          providerCount: providers.length,
+        },
       });
-      channel.subscribe((status, error) => {
-        if (disposed) return;
-        if (status === "SUBSCRIBED") {
-          onDiagnostic({
-            stage: "signal",
-            code: "signal.subscribed",
-            level: "success",
-            message: "Supabase Realtime 信令已订阅",
-            details: { durationMs: Date.now() - signalStartedAt },
-          });
-          onStatus("subscribed");
-        }
-        if (
-          status === "CHANNEL_ERROR"
-          || status === "TIMED_OUT"
-          || (status === "CLOSED" && !disposed)
-        ) {
-          onDiagnostic({
-            stage: "signal",
-            code: `signal.${status.toLowerCase()}`,
-            level: "error",
-            message: `Supabase Realtime 状态异常：${status}`,
-            details: {
-              durationMs: Date.now() - signalStartedAt,
-              ...(error ? diagnosticErrorDetails(error) : {}),
-            },
-          });
-          onStatus("unavailable");
-        }
-      });
+      for (const provider of providers) provider.start();
     },
     send(message: SignalMessage) {
-      const { stage, code } = signalTrace(message.type);
-      const sentAt = Date.now();
-      onDiagnostic(signalDiagnostic(message, "sent"));
-      void channel
-        .send({ type: "broadcast", event: SIGNAL_POLICY.realtimeEvent, payload: message })
-        .then((result) => {
-          onDiagnostic({
-            stage,
-            code: `${code}.ack`,
-            level: result === "ok" ? "success" : "error",
-            message: `${message.type} 信令确认结果：${result}`,
-            details: { durationMs: Date.now() - sentAt },
-            dedupeKey: message.type === "hello" || message.type === "candidate"
-              ? `${message.type}-ack-${result}`
-              : undefined,
-          });
-          if (!disposed && result !== "ok") {
-            onStatus("unavailable");
-          }
-        })
-        .catch((error: unknown) => {
-          if (!disposed) {
-            onDiagnostic({
-              stage,
-              code: `${code}.failed`,
-              level: "error",
-              message: `${message.type} 信令发送失败`,
-              details: { durationMs: Date.now() - sentAt, ...diagnosticErrorDetails(error) },
-            });
-            onStatus("unavailable");
-          }
-        });
+      const routed = {
+        ...message,
+        signalId: crypto.randomUUID(),
+        sentAt: Date.now(),
+      } as RoutedSignalMessage;
+      onDiagnostic(signalDiagnostic(routed, "sent"));
+      for (const provider of providers) provider.send(routed);
+    },
+    setNegotiationActive(active: boolean) {
+      for (const provider of providers) provider.setNegotiationActive?.(active);
     },
     dispose() {
       disposed = true;
-      onDiagnostic({
-        stage: "signal",
-        code: "signal.transport.dispose",
-        message: "释放 Supabase Realtime 信令传输",
-      });
-      void client.removeChannel(channel);
+      seenSignals.clear();
+      for (const provider of providers) provider.dispose();
     },
   };
 }

@@ -7,7 +7,7 @@
 | 问题类型 | 典型症状 | 对应章节 |
 | --- | --- | --- |
 | 页面与凭据 | 页面打不开、凭据超时、接口 502/503 | [1. 页面与 TURN 凭据](#1-页面与-turn-凭据) |
-| Supabase 信令 | `websocket connection failed`、没有 `signal.subscribed` | [2. Supabase 信令](#2-supabase-信令) |
+| 主备信令 | `websocket connection failed`、`signal.route.degraded/unavailable` | [2. 主备信令](#2-主备信令) |
 | ICE 与 TURN | 没有 relay、`ice.failed`、无法确认是否走中继 | [3. ICE 与 TURN](#3-ice-与-turn) |
 | 连接生命周期 | 两端状态不一致、反复自动重连、换网失败 | [4. 连接生命周期与网络差异](#4-连接生命周期与网络差异) |
 | 产品与安全边界 | 历史不同步、旧角色链接、第三人进入 | [5. 产品与安全边界](#5-产品与安全边界) |
@@ -49,38 +49,38 @@
 | `credentials.request.timeout` | 客户端已主动中止请求 | 检查 `/api/turn-credentials`；客户端会继续使用静态 ICE 或 STUN-only |
 | `credentials.response.http_error`，状态 502 | Vercel 已收到请求，但 Cloudflare 调用或配置失败 | 用 `requestId` 对照 Vercel Function 日志 |
 | 状态 503、错误为 `turn_not_configured` | 生产环境缺少 Cloudflare TURN 变量 | 检查 Vercel Production 环境变量并重新部署 |
-| `credentials.success` 与 `credentials.ready` | 凭据阶段完成 | 继续检查 `signal.subscribed`，不要提前判定 TURN 可用 |
+| `credentials.success` 与 `credentials.ready` | 凭据阶段完成 | 继续检查 `signal.route.*`，不要提前判定 TURN 可用 |
 
 Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服务端日志格式是 `[twoonly:turn][requestId] ...`，可用它把浏览器请求和 Function 日志对应起来。
 
-## 2. Supabase 信令
+## 2. 主备信令
 
 ![图 2：双方对等建连的正常时序](assets/faq-02-peer-connection-sequence.png)
 
-图 2 中的参与者 A、B 完全对等。双方都发送 Hello；`participantId` 只用于选出本轮临时 Offer 发起方，不是长期身份，也不是权限角色。Supabase 只交换建连信息，聊天正文不会发给 Supabase。
+图 2 中的参与者 A、B 完全对等。双方都发送 Hello；`participantId` 只用于选出本轮临时 Offer 发起方，不是长期身份，也不是权限角色。图中 Supabase 表示主路径；当前实现还会把同一信令加密后写入 Vercel HTTPS 临时队列，聊天正文不会进入两条信令。
 
 ### 2.1 任意一方无法访问 Supabase，会发生什么？
 
-建连前，双方必须通过 Supabase Realtime WebSocket 交换 Hello、Offer、Answer 和 ICE Candidate。任意一方无法访问 Supabase 时，即使 TURN 完全正常，也没有足够信息建立 PeerConnection。
+建连前，双方必须通过至少一条共同可达的信令交换 Hello、Offer、Answer 和 ICE Candidate。当前双方同时使用 Supabase Realtime 和同源 `/api/signal`：任意一方无法访问 Supabase 时，只要双方仍能访问 Vercel HTTPS，便可继续建立 PeerConnection。
 
-已经出现 `data.open` 后，现有聊天通常可以继续，因为正文走 WebRTC DataChannel；但刷新页面、网络迁移或连接断开后，重新握手仍依赖 Supabase。
+已经出现 `data.open` 后，聊天正文走 WebRTC DataChannel，HTTPS 轮询会暂停；网络迁移或连接断开后，轮询重新启动并参与新一轮握手。
 
-项目现在把 Supabase 作为必需信令，不再提供 `BroadcastChannel` 本地 fallback。缺少任一公开 Supabase 变量时会记录 `signal.config.missing` 并明确显示信令不可用。同浏览器标签页专用的伪降级既不能服务真实用户，也容易把本地测试误当成跨设备验收。
+项目仍不提供 `BroadcastChannel` 本地 fallback。缺少 Supabase 配置时记录 `signal.supabase.config.missing` 并尝试 HTTPS；缺少 Upstash 配置时 `/api/signal` 返回 503 并继续尝试 Supabase。只有两条都不可用才出现 `signal.route.unavailable`。
 
-后续解决方式不是让单边在失败后切换服务，而是让双方同时连接 Supabase 与一个共同可达的备用信令，再按唯一消息 ID 去重。完整设计见 [Supabase 不可达时的信令容灾方案](signaling-resilience.md)。
+这里不是单边故障后切换。双方始终双发双收，再按唯一 `signalId` 去重，避免一端留在 Supabase、另一端切到 HTTPS 的“信令分裂”。完整实现见 [Vercel HTTPS 信令降级](signaling-resilience.md)。
 
 ### 2.2 `websocket connection failed` 与 `transport failure` 是 TURN 报错吗？
 
 通常不是。Supabase Realtime SDK 会把部分底层 WebSocket 故障归一化为 `transport failure`。如果两条错误前后紧邻，它们一般描述同一次 Supabase 信令 WebSocket 失败。
 
-典型证据是已经出现 `credentials.success` 和 `signal.subscribe.start`，随后出现 `signal.transport.error`，却始终没有 `signal.subscribed`。此时应检查 Supabase 域名解析、WSS 连接、代理、防火墙和运营商链路，而不是继续修改 TURN。
+典型证据是已经出现 `credentials.success` 和 `signal.supabase.subscribe.start`，随后出现 `signal.supabase.transport.error`。如果同时出现 `signal.route.degraded` 和 HTTPS provider 的 `hello.received`，降级已经生效；如果最终是 `signal.route.unavailable`，再检查 `/api/signal` 状态和 Redis 配置。
 
 ### 2.3 正常建连应看到哪些关键事件？
 
 | 阶段 | 两端应出现的关键事件 | 成功含义 |
 | --- | --- | --- |
 | 凭据 | `credentials.success`、`credentials.ready` | ICE 配置解析完成 |
-| 信令 | `signal.subscribe.start`、`signal.subscribed` | Realtime Channel 已订阅 |
+| 信令 | `signal.supabase.ready` 或 `signal.route.degraded`；理想为 `signal.route.dual` | 至少一条共同信令可用 |
 | 对端发现 | `hello.sent`、`hello.ack`、`hello.received` | 双方能够通过信令互相发现 |
 | 临时选举 | `peer.elected` | 双方锁定同一个 peer 并确定本轮 Offer 发起方 |
 | SDP | `sdp.offer.*`、`sdp.answer.*` | Offer/Answer 已交换并应用 |
@@ -93,7 +93,7 @@ Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服�
 
 | 现象 | 判断 | 下一步 |
 | --- | --- | --- |
-| A 有 `hello.ack`，B 没有 `hello.received` | A 已把广播交给 Supabase，但 B 没收到 | 确认 B 已订阅、双方链接 room 一致、B 的 WSS 可达 |
+| A 有 Supabase/HTTPS send ack，B 没有 `hello.received` | 写入成功但 B 没收到 | 比较双方 `signal.route.*`、room 是否一致，并检查 B 的 HTTPS poll/WSS |
 | 双方都有 `hello.received`，没有 `peer.elected` | peer lock 或 epoch 判定未完成 | 查 `hello.busy`、`hello.stale`、`signal.message.stale_epoch` |
 | `peer.elected localIsOfferer=true` 后没有 `sdp.offer.created` | 临时发起端创建 Offer 失败 | 查紧随其后的 `sdp.negotiation.failed` |
 | Offer/Answer 轮次不一致 | 旧协商污染当前连接 | 比较双方 epoch 与短 negotiation ID，并让双方刷新到同一版本 |
@@ -102,7 +102,7 @@ Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服�
 ### 2.5 浏览器 Console 与 Vercel Logs 有什么区别？
 
 - 浏览器 Console：记录凭据请求、Supabase、Hello、SDP、ICE、DataChannel 和重连全过程。
-- Vercel Runtime Logs：只记录服务端 Route，例如 TURN 凭据签发；看不到浏览器里的 WebRTC 状态。
+- Vercel Runtime Logs：记录 TURN 凭据和 `/api/signal` 发布/失败；看不到浏览器里的 WebRTC 状态和密文内容。
 - Supabase Dashboard：用于观察 Realtime 服务状态；它不会替代两端浏览器日志。
 
 复制诊断日志时不要额外粘贴完整邀请链接、fragment secret、安全码、TURN username/credential、Supabase key、完整 SDP、原始 Candidate/IP 或聊天内容。客户端已有脱敏逻辑，不要手工绕过。
@@ -186,13 +186,13 @@ Analytics 的 `concurrentConnections`、`ingressBytes`、`egressBytes` 可以证
 
 WebRTC 的 `disconnected` 可能只是短暂抖动，立即销毁连接会让双方进入不同协商轮次。TwoOnly 先等待 2.5 秒；原连接恢复便继续使用，持续失败才重新握手。
 
-重新握手依赖 Supabase 恢复。如果 DataChannel 断了且 Realtime WebSocket 仍不可达，点击“立即重连”也无法交换新的 Offer/Answer/ICE。
+重新握手依赖 Supabase 或 Vercel HTTPS 至少一条恢复。DataChannel 断开时会重新启动 HTTPS 轮询；只有 `signal.route.unavailable` 时，“立即重连”才无法交换新的 Offer/Answer/ICE。
 
 ### 4.3 为什么同一 Wi‑Fi 能聊，换两个网络就失败？
 
 同一局域网可能直接选中 `host` candidate，完全没有验证公网 NAT 穿透或 TURN。跨网络失败时依次确认：
 
-1. 两端都能订阅 Supabase Realtime；
+1. 两端至少共享一条可用信令，并出现一致的 `signal.route.*`；
 2. 两端各自收集到 `srflx` 或 `relay`；
 3. UDP、TCP、TLS 443 至少一种 TURN 传输可用；
 4. ICE 真正选中了 Candidate Pair；
@@ -235,14 +235,15 @@ URL fragment 中包含会话秘密。fragment 通常不会随 HTTP 请求发送�
 1. 精确测试时间、浏览器版本、设备与网络类型；
 2. 页面“复制日志”得到的脱敏日志；
 3. `/api/turn-credentials` 的状态码、耗时和 `requestId`，不要提供 credential；
-4. 是否出现 `signal.subscribed`、`hello.received`、`data.open`；
+4. 是否出现 `signal.route.dual/degraded`、`hello.received`、`data.open`；
 5. selected Candidate Pair 的 candidate type、protocol 和双向字节；
 6. 如强制 relay，Cloudflare Analytics 对应时间段的 ingress/egress。
 
 ### 6.2 一份够用的验收清单
 
 - [ ] 参与者 A、B 使用两台真实设备和两个不同网络，打开同一条无角色邀请链接。
-- [ ] 双方都有 `signal.subscribed`、`hello.sent`、`hello.received` 和一致的 `peer.elected`。
+- [ ] 双方都有 `signal.route.dual/degraded`、`hello.sent`、`hello.received` 和一致的 `peer.elected`。
+- [ ] 阻断 Supabase 后，双方仍能通过 HTTPS provider 完成新房间握手。
 - [ ] Offer/Answer 使用同一轮双方 epoch 与 negotiation ID。
 - [ ] 第三个页面收到 `rejected(room-full)`，已有会话保持稳定。
 - [ ] 两端凭据接口都成功，且各自通过 Trickle ICE 得到 relay candidate。

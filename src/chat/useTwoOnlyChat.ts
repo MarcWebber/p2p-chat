@@ -150,6 +150,7 @@ export function useTwoOnlyChat() {
         onConnectionChange: (state, mode) => {
           setConnection(state);
           setConnectionMode(mode);
+          transport?.setNegotiationActive(state !== "connected");
         },
         onNotice: setNotice,
         onDiagnostic: diagnostics.report,
@@ -159,6 +160,8 @@ export function useTwoOnlyChat() {
 
       const createdTransport = createSignalTransport({
         roomId,
+        participantId,
+        secret,
         onMessage: createdSession.handleSignal,
         onDiagnostic: diagnostics.report,
         onStatus: (status) => {
@@ -166,12 +169,6 @@ export function useTwoOnlyChat() {
           else createdSession.onSignalUnavailable();
         },
       });
-      if (!createdTransport) {
-        setConnection("disconnected");
-        setConnectionMode("信令服务未配置");
-        setNotice("缺少 Supabase Realtime 配置，当前部署无法建立跨设备连接。");
-        return;
-      }
       transport = createdTransport;
       createdTransport.start();
     });

@@ -4,8 +4,9 @@
 
 | 服务 | 用途 | 是否保存聊天正文 |
 | --- | --- | --- |
-| Vercel | 托管页面资源，并通过 Route Handler 向 Cloudflare 请求短时 TURN 凭证 | 否 |
+| Vercel | 托管页面资源，提供 TURN 凭据接口和同源 HTTPS 降级信令 | 否 |
 | Supabase Realtime | 通过 WebSocket 转发 WebRTC 的 `hello / offer / answer / candidate / rejected` 信令 | 否 |
+| Upstash Redis | 保存最多 180 秒的 AES-GCM 密文信令，用于 Vercel HTTPS 降级 | 只保存临时信令密文 |
 | STUN | 帮助发现可用于 ICE 的公网映射地址 | 否 |
 | TURN（可选） | 直连失败时中继已经加密的 WebRTC 流量 | 不做应用存储，但会经过中继 |
 | 浏览器 `localStorage` | 保存当前设备的 AES-GCM 密文历史 | 保存密文 |
@@ -34,6 +35,9 @@ Project Ref、URL 和 publishable key 都是客户端配置，不是服务端秘
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 
+UPSTASH_REDIS_REST_URL=https://YOUR_DATABASE.upstash.io
+UPSTASH_REDIS_REST_TOKEN=xxx
+
 NEXT_PUBLIC_STUN_URLS=stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302
 NEXT_PUBLIC_TURN_URLS=
 NEXT_PUBLIC_TURN_USERNAME=
@@ -46,8 +50,11 @@ NEXT_PUBLIC_SITE_URL=https://your-domain.example
 
 | 变量 | 必需 | 说明 |
 | --- | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | 必需 | Supabase Project URL |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | 必需 | 浏览器可公开的 publishable key |
+| `NEXT_PUBLIC_SUPABASE_URL` | 主信令建议 | Supabase Project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | 主信令建议 | 浏览器可公开的 publishable key |
+| `UPSTASH_REDIS_REST_URL` | HTTPS 降级必需 | Upstash Redis REST URL，仅服务端使用 |
+| `UPSTASH_REDIS_REST_TOKEN` | HTTPS 降级必需 | Upstash Standard REST Token，仅服务端使用 |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | 二选一别名 | Vercel Marketplace 通常自动注入的等价名称；无需与 `UPSTASH_*` 同时配置 |
 | `NEXT_PUBLIC_STUN_URLS` | 建议 | 逗号分隔；未设置时使用代码中的 Cloudflare/Google 默认值 |
 | `NEXT_PUBLIC_TURN_URLS` | 稳定生产建议 | 逗号分隔，可含 `turn:` 与 `turns:` 地址 |
 | `NEXT_PUBLIC_TURN_USERNAME` | 配置 TURN 时必需 | TURN 用户名 |
@@ -94,11 +101,11 @@ channel
 
 官方文档说明：客户端订阅后，Broadcast 通过 WebSocket 发送；公共频道允许未登录客户端订阅。参见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast) 与 [Realtime Concepts](https://supabase.com/docs/guides/realtime/concepts)。这也是当前 MVP 快速建连和严格身份控制之间的主要取舍。
 
-### 缺少 Supabase 配置时
+### 主、备信令配置缺失时
 
-Supabase 是当前产品唯一的信令传输。两个公开变量任一缺失时，客户端记录 `signal.config.missing`，并把连接标为信令不可用；不会静默切换到只能服务同一浏览器的本地通道。
+两个 Supabase 公开变量任一缺失时，客户端记录 `signal.supabase.config.missing`，但仍会尝试同源 HTTPS。两项 Upstash 服务端变量缺失时，`/api/signal` 的 POST 返回 `503 signal_fallback_not_configured`，但 Supabase 正常时仍可建联。只有两条通道都不可用，聚合器才记录 `signal.route.unavailable`。
 
-本地开发也应配置测试 Supabase 项目，让开发、跨设备测试和生产使用同一条信令路径。这样本地成功才至少覆盖真实的 Realtime 订阅与消息投递，而不是只验证页面内逻辑。
+本地开发建议同时配置测试 Supabase 和测试 Redis，分别验证主通道、HTTPS-only 以及双通道去重。项目没有恢复仅限同浏览器标签页的 `BroadcastChannel` 伪降级。
 
 ## 5. Vercel 部署
 
@@ -108,7 +115,10 @@ Supabase 是当前产品唯一的信令传输。两个公开变量任一缺失�
 2. 如果仓库根目录不是 `twoonly`，把 Root Directory 设置为 `twoonly`。
 3. Framework Preset 选择 Next.js；Install/Build 使用 `npm install` 和 `npm run build`，输出目录保持自动检测。
 4. 在 Project Settings → Environment Variables 添加上节变量，并至少应用到 Production。
-5. 部署后把 `NEXT_PUBLIC_SITE_URL` 改成正式域名，再重新部署。Vercel 环境变量只对新部署生效，参见 [Vercel Environment Variables](https://vercel.com/docs/environment-variables)。
+5. 在 [Vercel Marketplace](https://vercel.com/marketplace/upstash) 安装 Upstash Redis，连接到同一项目和 Production 环境；Marketplace 通常注入 `KV_REST_API_URL` 与 `KV_REST_API_TOKEN`，代码已兼容。
+6. 部署后把 `NEXT_PUBLIC_SITE_URL` 改成正式域名，再重新部署。Vercel 环境变量只对新部署生效，参见 [Vercel Environment Variables](https://vercel.com/docs/environment-variables)。
+
+重新部署后访问 `/api/signal`。`configured:true` 表示服务端已经读到 Redis 变量；随后还要用浏览器日志确认 `signal.https.send.ack` 和通过 `https` provider 到达的 `hello.received`。
 
 ### CLI 方式
 
@@ -155,7 +165,7 @@ NEXT_PUBLIC_TURN_CREDENTIAL=<短时凭证>
 4. 在大陆及邻近区域部署 TURN，开放 UDP/TCP/TLS 443，并使用短时凭证。
 5. 建立中国电信、联通、移动和教育网的真实探测与连接成功率监控。
 
-若要避免单一 Supabase 域名不可达时完全无法重新握手，后续可按 [信令容灾方案](signaling-resilience.md) 增加 VPS Socket.IO 备用通道。客户端应双通道同时订阅和发送，不能只让检测到故障的一端单独切换。
+当前已经按 [信令容灾方案](signaling-resilience.md) 增加同源 Vercel HTTPS 通道。它能处理“页面可达但客户端 Supabase WebSocket 不可达”的情况；若 Vercel 本身也不可达，仍需把页面与同源信令迁移到大陆合规托管或增加另一个共同可达入口。
 
 Vercel 官方也明确给出面向中国访问时使用自定义域名和面向中国优化 CDN/托管方案的建议，参见 [Accessing Vercel-hosted sites from mainland China](https://vercel.com/kb/guide/accessing-vercel-hosted-sites-from-mainland-china)。需要使用中国大陆 CDN 节点时通常涉及 ICP 备案；可参考 [阿里云 ICP 备案说明](https://www.alibabacloud.com/help/en/icp-filing/basic-icp-service/user-guide/icp-filing-application-overview)。
 
@@ -181,7 +191,8 @@ npm run build
 7. 新建会话后旧身份锁、消息和连接状态被清理；
 8. 清空历史只影响当前设备；
 9. 浏览器 Console 无错误；
-10. Vercel HTTP 200、Supabase Realtime 无异常日志。
+10. `/api/signal` 显示 `configured:true`，Vercel Function 与 Redis 无异常日志。
+11. 分别阻断 Supabase 和 `/api/signal`，确认任意一条信令仍能完成握手。
 
 ## 9. 依赖与变更注意事项
 

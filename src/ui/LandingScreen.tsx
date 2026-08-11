@@ -20,7 +20,7 @@ export function LandingScreen({ onCreateRoom }: LandingScreenProps) {
             <span>本地保存</span><i />
             <span>图片和语音</span>
           </div>
-          <p className="prototype-note">跨设备连接 · Supabase Realtime 信令</p>
+          <p className="prototype-note">跨设备连接 · 双路加密信令</p>
         </section>
 
         <section className="wiki-card" aria-labelledby="wiki-title">

@@ -1,5 +1,6 @@
 import { RTC_POLICY } from "@/src/config/policy";
 import { SERVER_RUNTIME_CONFIG } from "@/src/config/serverRuntime";
+import { isSameOriginRequest } from "@/src/server/requestSecurity";
 import { createTraceId } from "@/src/utils/ids";
 import { hasTurnServer, normalizeIceServer } from "@/src/webrtc/iceServers";
 
@@ -25,14 +26,7 @@ export async function POST(request: Request) {
   );
   console.info(`[twoonly:turn][${requestId}] credential request received`);
 
-  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-  const host = forwardedHost || request.headers.get("host");
-  const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-  const protocol = forwardedProtocol || new URL(request.url).protocol.replace(":", "");
-  const requestOrigin = host ? `${protocol}://${host}` : new URL(request.url).origin;
-  const origin = request.headers.get("origin");
-  const fetchSite = request.headers.get("sec-fetch-site");
-  if ((origin && origin !== requestOrigin) || fetchSite === "cross-site") {
+  if (!isSameOriginRequest(request)) {
     console.warn(`[twoonly:turn][${requestId}] cross-origin request rejected`);
     return respond({ error: "cross_origin_request" }, 403);
   }

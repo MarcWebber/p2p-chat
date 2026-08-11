@@ -38,6 +38,16 @@ export const SIGNAL_POLICY = {
   maxSdpLength: 1_000_000,
   maxCandidateLength: 8_192,
   realtimeEvent: "signal",
+  httpsEndpoint: "/api/signal",
+  httpsRequestIdHeader: "X-TwoOnly-Signal-Request-Id",
+  httpsPollIntervalMs: 1_200,
+  httpsRequestTimeoutMs: 10_000,
+  httpsHelloIntervalMs: 5_000,
+  httpsReplayWindowMs: 15_000,
+  httpsQueueTtlSeconds: 180,
+  httpsQueueMaxEvents: 128,
+  httpsMaxRequestCharacters: 1_500_000,
+  maxDedupeEntries: 512,
 } as const;
 
 export const SIGNAL_REJECTION_REASON = {
@@ -67,5 +77,6 @@ export const RTC_POLICY = {
 
 export const RESOURCE_NAMES = {
   roomPrefix: "twoonly:",
+  httpsSignalStreamPrefix: "twoonly:https-signal:",
   dataChannel: "twoonly-messages",
 } as const;

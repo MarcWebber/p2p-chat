@@ -165,7 +165,7 @@ flowchart LR
   ICE --> DATA["P2P 或中继数据"]
 ```
 
-TURN 只改善最后两段的穿透，解决不了 `vercel.app`、Supabase WebSocket、DNS 或跨境链路本身不可达。
+TURN 只改善最后两段的穿透，解决不了 `vercel.app`、DNS 或跨境链路本身不可达。当前同源 HTTPS 降级可以绕过客户端到 Supabase WebSocket 的故障，但不能绕过 Vercel 自身不可达。
 
 如果国内稳定性是正式目标，更现实的路径是：
 
@@ -210,4 +210,3 @@ TwoOnly 当前的答案是：不自建长期连接、使用托管信令、必须
 - [Vercel WebSocket support](https://vercel.com/kb/guide/do-vercel-serverless-functions-support-websocket-connections)
 - [Cloudflare TURN credentials](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
 - [Cloudflare TURN FAQ](https://developers.cloudflare.com/realtime/turn/faq/)
-

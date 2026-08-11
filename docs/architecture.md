@@ -20,7 +20,10 @@ flowchart LR
 
   subgraph S["建连基础设施"]
     SB["Supabase Realtime Broadcast"]
+    VH["Vercel HTTPS /api/signal"]
+    RS["Redis Stream 临时密文队列"]
     ICE["STUN / 可选 TURN"]
+    VH --> RS
   end
 
   subgraph B["浏览器 B"]
@@ -36,11 +39,13 @@ flowchart LR
   AP <-->|"加密聊天负载"| BP
   AP -. "SDP / ICE 信令" .-> SB
   SB -. "SDP / ICE 信令" .-> BP
+  AP -. "AES-GCM 密文信令" .-> VH
+  VH -. "AES-GCM 密文信令" .-> BP
   AP -. "候选地址发现 / 必要时中继" .-> ICE
   BP -. "候选地址发现 / 必要时中继" .-> ICE
 ```
 
-Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务端 Cloudflare Token 生成短时 TURN 配置。该 Function 不接收聊天正文。Supabase 只在 WebRTC 建连阶段交换信令；连接成功后，应用消息走 DataChannel，代码不会把聊天正文写入 Supabase Database、Storage 或 Vercel Function。
+Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时 TURN 配置，并通过 `/api/signal` 提供同源 HTTPS 降级信令。Supabase 与 HTTPS 在 WebRTC 建连阶段双活；HTTPS payload 先由浏览器用邀请密钥加密，Redis 最多保留约 128 条并在 180 秒后过期。连接成功后，应用消息走 DataChannel，聊天正文不会写入 Supabase、Redis 或 Vercel Function。
 
 ## 2. 运行时组件
 
@@ -50,7 +55,7 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 - `app/page.tsx`：渲染唯一的聊天客户端组件。
 - `app/globals.css`：启动页、桌面聊天、移动端聊天、连接状态和操作反馈样式。
 
-页面本身可静态预渲染；TURN credential Route Handler 按请求动态运行。WebRTC、Web Crypto、录音、文件读取和本地存储仍全部在浏览器端执行。
+页面本身可静态预渲染；TURN credential 与 HTTPS signal Route Handler 按请求动态运行。WebRTC、Web Crypto、录音、文件读取和本地存储仍全部在浏览器端执行。
 
 ### 聊天客户端
 
@@ -62,7 +67,8 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 | `src/chat` | 领域类型、React 状态和用例编排 | WebRTC/Supabase 的底层细节 |
 | `src/crypto` | 随机值、安全码、AES-GCM 加解密 | 保存历史、发送网络消息 |
 | `src/diagnostics` | 建连日志、脱敏、内存环形缓冲和 Console 输出 | 持久化日志、记录密钥或消息内容 |
-| `src/signal` | 信令类型校验与 Supabase Realtime 适配 | 聊天正文、PeerConnection 生命周期 |
+| `src/signal` | 信令校验、Supabase/HTTPS 适配、双发去重和短时 Redis Stream | 聊天正文、PeerConnection 生命周期 |
+| `src/server` | Route Handler 共用的同源请求校验 | 浏览器状态、房间密钥 |
 | `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和 ICE Server 规范化 | React UI、本地历史 |
 | `src/storage` | `localStorage` 密文历史、`sessionStorage` 本标签发送消息 ID | 加解密、Supabase Database/Storage |
 | `src/room` | 无角色邀请链接的解析、生成与旧链接兼容 | 连接状态机 |
@@ -71,7 +77,7 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 | `src/ui` | 首页、聊天页和展示组件 | 直接访问 Supabase、WebRTC 或浏览器存储 |
 | `src/utils` | 剪贴板、Data URL、时间/容量格式、短 ID 和通用类型守卫 | 领域状态、网络策略、服务端秘密 |
 
-这里特别需要区分：Supabase 当前只提供 Realtime Broadcast 信令，不保存聊天消息，因此它属于 `signal`，不是 `storage`。`storage` 只封装当前浏览器内的持久化。
+这里特别需要区分：Supabase 和 Redis 都只承担建连信令，不保存聊天消息，因此属于 `signal`，不是聊天 `storage`。`storage` 只封装当前浏览器内的持久化。
 
 ### 配置边界
 
@@ -79,7 +85,7 @@ Vercel 提供静态网页与资源，并通过 `/api/turn-credentials` 用服务
 
 - `config/policy.ts` 是环境无关的产品策略，集中保存附件上限、存储容量、协议版本、RTC 超时、Candidate 缓存上限和资源命名；
 - `config/publicRuntime.ts` 只解析 `NEXT_PUBLIC_*`，生成可进入浏览器包的 Supabase 与静态 ICE 配置；
-- `config/serverRuntime.ts` 以 `server-only` 标记，保存站点地址、Cloudflare TURN Key/Token、TTL 和服务商超时。客户端模块一旦误引入它，Next.js 会在构建期报错。
+- `config/serverRuntime.ts` 以 `server-only` 标记，保存站点地址、Cloudflare TURN Key/Token 和 Upstash REST 凭据。客户端模块一旦误引入它，Next.js 会在构建期报错。
 
 配置只描述值和环境，不执行握手或请求。通用行为放在 `utils`，ICE 领域行为放在 `webrtc/iceServers.ts`。例如服务端 TURN Route 与浏览器凭据解析现在共用 `normalizeIceServer` / `hasTurnServer`，不会再各维护一套校验规则。
 
@@ -98,7 +104,7 @@ secret = randomToken(32)     # 约 256 位随机会话秘密
 https://站点/?room=<roomId>#<secret>
 ```
 
-- `room` 用于选择信令 topic：`twoonly:<roomId>`。
+- `room` 用于选择 Supabase topic 和 Redis Stream：`twoonly:<roomId>` / `twoonly:https-signal:<roomId>`。
 - `secret` 放在 URL Fragment 中，浏览器不会把 Fragment 作为 HTTP 请求路径发送给 Vercel；客户端脚本从 `window.location.hash` 读取它并派生 AES 密钥。
 - 两端显示从同一 `secret` 计算出的安全码，用户可通过另一个可信渠道核对。
 - 每次页面加载都会生成新的随机 `participantId`。它用于本次页面的信令寻址和 Offer 发起方选举，不是账号或长期设备身份。
@@ -107,7 +113,7 @@ https://站点/?room=<roomId>#<secret>
 
 ## 4. “只允许两个人”的实现
 
-每个页面实例生成随机 `participantId`，并在 Supabase 订阅成功后周期性广播 protocol v2 `hello`。双方收到对方 Hello 后各自在内存中锁定同一个 peer，并通过 `participantId` 字符串比较得到一致结论：较小 ID 是本轮临时 Offer 发起方，同时创建 DataChannel；另一端处理 Offer 并返回 Answer。连接打开后，两端能力完全相同，没有长期房主或访客角色。
+每个页面实例生成随机 `participantId`，并在 Supabase 或 HTTPS 至少一条信令可用后周期性广播 protocol v2 `hello`。同一信令携带 `signalId` 并发送到所有通道，重复到达时在进入状态机前丢弃。双方收到对方 Hello 后各自在内存中锁定同一个 peer，并通过 `participantId` 字符串比较得到一致结论：较小 ID 是本轮临时 Offer 发起方，同时创建 DataChannel；另一端处理 Offer 并返回 Answer。连接打开后，两端能力完全相同，没有长期房主或访客角色。
 
 信令同时携带 `fromEpoch`、面向对端的 `toEpoch` 和每轮随机 `negotiationId`。本端重连时递增 local epoch；收到对方更大的 remote epoch 时关闭旧 Peer 并进入新轮次。Answer 和 Candidate 必须同时命中参与者、双方 epoch 与 negotiation ID；远端描述尚未就绪时，Candidate 也按这组键分桶缓存，避免旧轮次污染新连接。
 
@@ -144,6 +150,8 @@ https://站点/?room=<roomId>#<secret>
 ```text
 twoonly/
 ├── app/
+│   ├── api/signal/
+│   │   └── route.ts                # 同源 HTTPS 降级信令入口
 │   ├── api/turn-credentials/
 │   │   └── route.ts                # Cloudflare TURN 短时凭据与请求追踪
 │   ├── globals.css                 # 全局与响应式 UI
@@ -160,7 +168,8 @@ twoonly/
 │   │   ├── types.ts                # 聊天领域类型
 │   │   └── useTwoOnlyChat.ts       # 状态与用例协调器
 │   ├── crypto/
-│   │   └── messageCrypto.ts        # 随机值、安全码、AES-GCM
+│   │   ├── aesGcm.ts               # 通用 AES-GCM JSON 信封
+│   │   └── messageCrypto.ts        # 随机值、安全码、聊天加解密
 │   ├── diagnostics/
 │   │   └── connectionDiagnostics.ts # 脱敏建连日志与内存缓冲
 │   ├── media/
@@ -170,8 +179,14 @@ twoonly/
 │   ├── room/
 │   │   └── invitation.ts           # 房间 URL 与邀请链接
 │   ├── signal/
-│   │   ├── types.ts                # 信令协议与结构校验
-│   │   └── signalTransport.ts      # Supabase/本地信令适配器
+│   │   ├── types.ts                       # 信令协议与结构校验
+│   │   ├── supabaseSignalTransport.ts     # Supabase 主信令
+│   │   ├── httpsSignalTransport.ts        # 浏览器 HTTPS 降级信令
+│   │   ├── httpsSignalProtocol.ts         # HTTPS 请求/响应校验
+│   │   ├── serverSignalStore.ts           # 服务端 Redis Stream
+│   │   └── signalTransport.ts             # 双活聚合与去重
+│   ├── server/
+│   │   └── requestSecurity.ts      # Route 同源请求校验
 │   ├── storage/
 │   │   └── chatStorage.ts          # 密文历史与本标签发送消息 ID
 │   ├── ui/
