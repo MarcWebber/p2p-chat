@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEv
 
 import type {
   ChatMessage,
+  ChatProfile,
   ConnectionState,
   EncryptedWire,
   MessageKind,
@@ -31,6 +32,9 @@ import { formatBytes } from "@/src/utils/format";
 import { WebRtcSession } from "@/src/webrtc/WebRtcSession";
 import { resolveIceConfiguration } from "@/src/webrtc/iceConfig";
 
+const PROFILE_KEY = "twoonly.profile";
+const DEFAULT_PROFILE: ChatProfile = { nickname: "我", avatar: "🙂" };
+
 function replaceStoredRoom(rooms: StoredRoom[], replacement: StoredRoom) {
   return [...rooms.filter((room) => room.roomId !== replacement.roomId), replacement]
     .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
@@ -45,6 +49,7 @@ export function useTwoOnlyChat() {
   const [connectionMode, setConnectionMode] = useState("等待另一位成员");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [storedRooms, setStoredRooms] = useState<StoredRoom[]>([]);
+  const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState(false);
@@ -68,6 +73,7 @@ export function useTwoOnlyChat() {
       author: "self",
       createdAt: Date.now(),
       fileName,
+      profile,
     };
     const wire = await activeCrypto.crypto.encrypt(message);
     if (messageCryptoRef.current !== activeCrypto) return;
@@ -90,6 +96,11 @@ export function useTwoOnlyChat() {
     onAudio: (content) => sendMessage("audio", content, "语音消息"),
     onNotice: setNotice,
   });
+
+  useEffect(() => {
+    const savedProfile = window.localStorage.getItem(PROFILE_KEY);
+    if (savedProfile) setProfile(JSON.parse(savedProfile) as ChatProfile);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -455,11 +466,17 @@ export function useTwoOnlyChat() {
     lastOpenedAt: room.lastOpenedAt,
   }));
 
+  const updateProfile = (nextProfile: ChatProfile) => {
+    setProfile(nextProfile);
+    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
+  };
+
   return {
     view: invitation === undefined ? "loading" : invitation ? "chat" : "landing",
     connection,
     connectionMode,
     messages,
+    profile,
     draft,
     notice,
     copied,
@@ -467,6 +484,7 @@ export function useTwoOnlyChat() {
     safetyCode,
     activeRoomId: roomId,
     conversations,
+    updateProfile,
     setDraft,
     clearNotice: () => setNotice(""),
     createRoom,

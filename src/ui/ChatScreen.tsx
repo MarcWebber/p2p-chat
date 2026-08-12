@@ -19,6 +19,7 @@ export function ChatScreen(props: TwoOnlyChatController) {
       />
       <section className="chat-main">
         <ChatHeader
+          profile={props.profile}
           connection={props.connection}
           connectionMode={props.connectionMode}
           safetyCode={props.safetyCode}
@@ -29,9 +30,11 @@ export function ChatScreen(props: TwoOnlyChatController) {
           conversations={props.conversations}
           activeRoomId={props.activeRoomId}
           onOpenRoom={props.openStoredRoom}
+          onProfileChange={props.updateProfile}
         />
         <ConnectionDiagnosticsPanel diagnostics={props.diagnostics} />
         <MessageList
+          profile={props.profile}
           connection={props.connection}
           messages={props.messages}
           copied={props.copied}

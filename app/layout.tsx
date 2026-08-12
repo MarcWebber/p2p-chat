@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 import { SERVER_RUNTIME_CONFIG } from "@/src/config/serverRuntime";
 
-import "./globals.css";
+import "./globals.generated.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SERVER_RUNTIME_CONFIG.siteUrl),

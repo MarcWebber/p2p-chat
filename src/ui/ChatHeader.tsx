@@ -1,6 +1,11 @@
-import type { ConnectionState, ConversationSummary } from "@/src/chat/types";
+import type { FormEvent } from "react";
+
+import type { ChatProfile, ConnectionState, ConversationSummary } from "@/src/chat/types";
+
+const AVATAR_OPTIONS = ["🙂", "😎", "🐱", "🐶", "🦊", "🐼", "👾", "🌙"];
 
 type ChatHeaderProps = {
+  profile: ChatProfile;
   connection: ConnectionState;
   connectionMode: string;
   safetyCode: string;
@@ -11,9 +16,11 @@ type ChatHeaderProps = {
   conversations: ConversationSummary[];
   activeRoomId: string;
   onOpenRoom: (roomId: string) => void;
+  onProfileChange: (profile: ChatProfile) => void;
 };
 
 export function ChatHeader({
+  profile,
   connection,
   connectionMode,
   safetyCode,
@@ -24,7 +31,18 @@ export function ChatHeader({
   conversations,
   activeRoomId,
   onOpenRoom,
+  onProfileChange,
 }: ChatHeaderProps) {
+  const saveProfile = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const nickname = String(values.get("nickname")).trim();
+    const avatar = String(values.get("avatar"));
+    if (!nickname || !avatar) return;
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    onProfileChange({ nickname, avatar });
+  };
+
   return (
     <header className="chat-header">
       <div>
@@ -32,6 +50,36 @@ export function ChatHeader({
         <p><span className={`status-dot ${connection}`} /> {connectionMode}</p>
       </div>
       <div className="header-actions">
+        <details className="profile-menu">
+          <summary className="profile-avatar" aria-label="设置昵称和头像" title={profile.nickname}>
+            {profile.avatar}
+          </summary>
+          <form className="profile-editor" key={`${profile.nickname}:${profile.avatar}`} onSubmit={saveProfile}>
+            <strong>本机资料</strong>
+            <label className="profile-name">
+              <span>昵称</span>
+              <input name="nickname" defaultValue={profile.nickname} maxLength={16} required />
+            </label>
+            <fieldset>
+              <legend>头像</legend>
+              <div className="profile-avatars">
+                {AVATAR_OPTIONS.map((avatar) => (
+                  <label key={avatar}>
+                    <input
+                      type="radio"
+                      name="avatar"
+                      value={avatar}
+                      defaultChecked={avatar === profile.avatar}
+                    />
+                    <span>{avatar}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <small>资料只保存在本机；发消息时会加密展示给对方。</small>
+            <button type="submit">保存</button>
+          </form>
+        </details>
         <select
           className="mobile-room-select"
           value={activeRoomId}

@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
 
-import type { ChatMessage, ConnectionState } from "@/src/chat/types";
+import type { ChatMessage, ChatProfile, ConnectionState } from "@/src/chat/types";
 import { formatMinuteTime } from "@/src/utils/format";
 
 type MessageListProps = {
+  profile: ChatProfile;
   connection: ConnectionState;
   messages: ChatMessage[];
   copied: boolean;
@@ -12,6 +13,7 @@ type MessageListProps = {
 };
 
 export function MessageList({
+  profile,
   connection,
   messages,
   copied,
@@ -40,11 +42,12 @@ export function MessageList({
         </div>
       ) : messages.map((message) => {
         const mine = message.author === "self";
+        const messageProfile = mine ? profile : message.profile;
         return (
           <article className={`message-row ${mine ? "mine" : "theirs"}`} key={message.id}>
-            <div className="message-avatar">{mine ? "我" : "Ta"}</div>
+            <div className="message-avatar">{messageProfile?.avatar ?? "Ta"}</div>
             <div className="message-content">
-              <div className="message-meta"><span>{mine ? "我" : "对方"}</span><time>{formatMinuteTime(message.createdAt)}</time></div>
+              <div className="message-meta"><span>{messageProfile?.nickname ?? "对方"}</span><time>{formatMinuteTime(message.createdAt)}</time></div>
               <div className={`message-bubble ${message.kind}`}>
                 {message.kind === "text" ? <p>{message.content}</p> : null}
                 {message.kind === "image" ? <img src={message.content} alt={message.fileName || "聊天图片"} /> : null}

@@ -38,8 +38,6 @@ export function ChatSidebar({
       <aside className="app-rail" aria-label="TwoOnly">
         <div className="rail-logo">2</div>
         <span className="rail-caption">私聊</span>
-        <div className="rail-spacer" />
-        <div className="rail-avatar">我</div>
       </aside>
       <aside className="chat-sidebar">
         <div className="sidebar-top">

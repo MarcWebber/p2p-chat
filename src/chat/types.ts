@@ -4,6 +4,11 @@ export type MessageKind = "text" | "image" | "audio";
 
 export type MessageAuthor = "self" | "peer";
 
+export type ChatProfile = {
+  nickname: string;
+  avatar: string;
+};
+
 export type ChatMessage = {
   id: string;
   kind: MessageKind;
@@ -11,6 +16,7 @@ export type ChatMessage = {
   author: MessageAuthor;
   createdAt: number;
   fileName?: string;
+  profile?: ChatProfile;
 };
 
 export type EncryptedWire = {

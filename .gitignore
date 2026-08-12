@@ -8,3 +8,4 @@ next-env.d.ts
 .env*.local
 npm-debug.log*
 *.tsbuildinfo
+app/globals.generated.css
