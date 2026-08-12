@@ -11,8 +11,6 @@ export function ChatScreen(props: TwoOnlyChatController) {
       <ChatSidebar
         conversations={props.conversations}
         activeRoomId={props.activeRoomId}
-        messages={props.messages}
-        connection={props.connection}
         onCreateRoom={props.createFreshRoom}
         onClearHistory={props.clearLocalHistory}
         onOpenRoom={props.openStoredRoom}

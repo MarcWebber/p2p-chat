@@ -130,14 +130,9 @@ https://站点/?room=<roomId>#<secret>
 
 ## 5. 状态与生命周期
 
-连接状态为 `waiting → connecting → connected`，失败或关闭后进入 `disconnected`。新建聊天会同时清理：
+每个房间的连接状态都是 `waiting → connecting → connected`，失败或关闭后进入 `disconnected`。聊天控制器按 `roomId` 保存一组 `RoomRuntime`；每个运行时独立持有随机页面级 `participantId`、消息加密器、信令传输、`WebRtcSession`、消息和诊断状态。IndexedDB 的 `rooms` object store 继续以 `roomId` 为唯一键，不生成或保存 MAC、deviceId 或浏览器指纹。
 
-- 旧 PeerConnection 与 DataChannel；
-- 对方身份锁、local/remote epoch、协商 ID、已处理 Offer 和按轮次缓存的 ICE；
-- 未完成消息分片、输入框和当前消息列表；
-- 连接模式和提示状态。
-
-聊天控制器只保存一份邀请状态：`undefined` 表示浏览器端还没有完成 URL 解析，`null` 表示当前是首页，包含 `roomId / secret` 的对象表示已经进入聊天页。`roomId` 和会话秘密都从这份对象派生，不再用多组可以短暂失配的 React state 表示同一事实。客户端入口直接根据这三个状态渲染空壳、首页或聊天页。
+页面启动时会为全部已保存房间创建运行时。侧栏切换只更新当前展示的 `activeRoomId`、URL 和输入状态，不销毁其他房间的 PeerConnection、DataChannel 或信令订阅；只有房间凭证被替换、房间被移除或页面卸载时才释放对应运行时。因此一台机器可以同时维持多个彼此独立的双人房间，而每个房间内部仍由 `PeerLock` 限制为一个对端。
 
 `WebRtcSession` 现在使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。实例创建后已经具备发现能力，信令就绪才启动 Hello 定时器，因此不再保留没有独立行为的 `idle` 和空 `start()`。对端身份收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连或换届时通过一个入口清理 Peer、协商和 Candidate 缓存。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
 

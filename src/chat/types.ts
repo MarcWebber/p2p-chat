@@ -28,4 +28,6 @@ export type EncryptedWire = {
 export type ConversationSummary = {
   roomId: string;
   lastOpenedAt: number;
+  connection: ConnectionState;
+  preview: string;
 };

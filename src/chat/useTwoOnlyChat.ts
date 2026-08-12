@@ -1,105 +1,104 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
-import type {
-  ChatMessage,
-  ChatProfile,
-  ConnectionState,
-  EncryptedWire,
-  MessageKind,
-} from "@/src/chat/types";
+import { RoomRuntime, type RoomRuntimeSnapshot } from "@/src/chat/roomRuntime";
+import type { ChatMessage, ChatProfile, MessageKind } from "@/src/chat/types";
 import { CHAT_POLICY, SIGNAL_POLICY, UI_POLICY } from "@/src/config/policy";
-import { createMessageCrypto, createSafetyCode } from "@/src/crypto/messageCrypto";
+import { createSafetyCode } from "@/src/crypto/messageCrypto";
 import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
 import { useAudioRecorder } from "@/src/media/useAudioRecorder";
 import {
-  createParticipantId,
   createRoomInvitation,
   createRoomUrl,
   readRoomInvitation,
   type RoomInvitation,
 } from "@/src/room/invitation";
-import { createSignalTransport } from "@/src/signal/signalTransport";
 import {
-  clearEncryptedHistory,
   listStoredRooms,
-  loadEncryptedHistory,
-  persistEncryptedMessage,
   upsertStoredRoom,
   type StoredRoom,
 } from "@/src/storage/chatStorage";
 import { copyText, readAsDataUrl } from "@/src/utils/browser";
 import { formatBytes } from "@/src/utils/format";
-import { WebRtcSession } from "@/src/webrtc/WebRtcSession";
-import { resolveIceConfiguration } from "@/src/webrtc/iceConfig";
 
 const PROFILE_KEY = "twoonly.profile";
 const DEFAULT_PROFILE: ChatProfile = { nickname: "我", avatar: "🙂" };
+const EMPTY_MESSAGES: ChatMessage[] = [];
 
 function replaceStoredRoom(rooms: StoredRoom[], replacement: StoredRoom) {
   return [...rooms.filter((room) => room.roomId !== replacement.roomId), replacement]
     .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
 }
 
+function createUniqueRoomInvitation(rooms: StoredRoom[]) {
+  let invitation = createRoomInvitation();
+  const roomIds = new Set(rooms.map((room) => room.roomId));
+  while (roomIds.has(invitation.roomId)) invitation = createRoomInvitation();
+  return invitation;
+}
+
+function messagePreview(message: ChatMessage | undefined, connectionMode: string) {
+  if (!message) return connectionMode;
+  if (message.kind === "text") return message.content;
+  return message.kind === "audio" ? "[语音消息]" : "[图片]";
+}
+
 export function useTwoOnlyChat() {
-  const [invitation, setInvitation] = useState<ReturnType<typeof readRoomInvitation>>();
-  const roomId = invitation?.roomId ?? "";
-  const secret = invitation?.secret ?? "";
-  const [participantId, setParticipantId] = useState(createParticipantId);
-  const [connection, setConnection] = useState<ConnectionState>("waiting");
-  const [connectionMode, setConnectionMode] = useState("等待另一位成员");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [activeRoomId, setActiveRoomId] = useState<string | undefined>();
   const [storedRooms, setStoredRooms] = useState<StoredRoom[]>([]);
+  const [roomSnapshots, setRoomSnapshots] = useState<Record<string, RoomRuntimeSnapshot>>({});
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [draft, setDraft] = useState("");
-  const [notice, setNotice] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [diagnostics] = useState(() => new ConnectionDiagnostics());
+  const [globalNotice, setGlobalNotice] = useState("");
+  const [copiedRoomId, setCopiedRoomId] = useState("");
+  const [bootstrapDiagnostics] = useState(() => new ConnectionDiagnostics());
 
-  const sessionRef = useRef<WebRtcSession | null>(null);
-  const messageCryptoRef = useRef<{
-    roomId: string;
-    crypto: ReturnType<typeof createMessageCrypto>;
-  } | null>(null);
+  const runtimesRef = useRef(new Map<string, RoomRuntime>());
+  const activeRoomIdRef = useRef("");
   const copyTimerRef = useRef<number | undefined>(undefined);
+  const mountedRef = useRef(false);
+  activeRoomIdRef.current = activeRoomId ?? "";
+
+  const setRoomNotice = (roomId: string, notice: string) => {
+    const runtime = runtimesRef.current.get(roomId);
+    if (runtime) runtime.setNotice(notice);
+    else if (roomId === activeRoomIdRef.current) setGlobalNotice(notice);
+  };
+
+  const setActiveNotice = (notice: string) => setRoomNotice(activeRoomIdRef.current, notice);
 
   const sendMessage = async (kind: MessageKind, content: string, fileName?: string) => {
-    const activeCrypto = messageCryptoRef.current;
-    const session = sessionRef.current;
-    if (!roomId || activeCrypto?.roomId !== roomId) return;
-    const message: ChatMessage = {
-      id: crypto.randomUUID(),
-      kind,
-      content,
-      author: "self",
-      createdAt: Date.now(),
-      fileName,
-      profile,
-    };
-    const wire = await activeCrypto.crypto.encrypt(message);
-    if (messageCryptoRef.current !== activeCrypto) return;
-    setMessages((current) => [...current, message]);
-    const delivered = sessionRef.current === session && Boolean(session?.send(wire));
-    if (!delivered) {
-      setNotice("消息已加密保存在本机；对方连接后发送的新消息会实时送达。");
-    }
-    try {
-      await persistEncryptedMessage(roomId, wire, "self");
-    } catch {
-      if (messageCryptoRef.current === activeCrypto) {
-        setNotice("本机存储空间不可用，这条消息只保留在当前页面中。");
-      }
-    }
+    const runtime = runtimesRef.current.get(activeRoomIdRef.current);
+    if (!runtime) return;
+    await runtime.send(kind, content, profile, fileName);
   };
 
   const { isRecording, startRecording, stopRecording, cancelRecording } = useAudioRecorder({
-    sessionKey: roomId,
+    sessionKey: activeRoomId ?? "",
     onAudio: (content) => sendMessage("audio", content, "语音消息"),
-    onNotice: setNotice,
+    onNotice: setActiveNotice,
   });
 
   useEffect(() => {
     const savedProfile = window.localStorage.getItem(PROFILE_KEY);
-    if (savedProfile) setProfile(JSON.parse(savedProfile) as ChatProfile);
+    if (!savedProfile) return;
+    try {
+      const candidate = JSON.parse(savedProfile) as Partial<ChatProfile>;
+      if (typeof candidate.nickname === "string" && typeof candidate.avatar === "string") {
+        setProfile({ nickname: candidate.nickname, avatar: candidate.avatar });
+      }
+    } catch {
+      window.localStorage.removeItem(PROFILE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      for (const runtime of runtimesRef.current.values()) runtime.dispose();
+      runtimesRef.current.clear();
+      if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -136,13 +135,13 @@ export function useTwoOnlyChat() {
 
         if (!active) return;
         setStoredRooms(rooms);
-        setInvitation(nextInvitation);
+        setActiveRoomId(nextInvitation?.roomId ?? "");
         if (missingRequestedRoom) {
-          setNotice("这台设备上没有保存这个房间，请使用完整邀请链接进入。");
+          setGlobalNotice("这台设备上没有保存这个房间，请使用完整邀请链接进入。");
         } else if (restored) {
-          setNotice("已从这台设备恢复上次聊天。");
+          setGlobalNotice("已恢复本机保存的聊天，其他房间也会同时保持连接。");
         }
-        diagnostics.report({
+        bootstrapDiagnostics.report({
           stage: "client",
           code: "client.storage.ready",
           level: "success",
@@ -150,33 +149,17 @@ export function useTwoOnlyChat() {
           details: { backend: "indexeddb", savedRooms: rooms.length },
           dedupeKey: "storage-ready",
         });
-
-        if (nextInvitation) {
-          diagnostics.report({
-            stage: "client",
-            code: restored ? "client.invitation.restored" : "client.invitation.ready",
-            level: "success",
-            message: restored ? "已从本机恢复最近会话" : "邀请信息解析完成",
-            details: { protocol: SIGNAL_POLICY.protocolVersion, online: navigator.onLine },
-            dedupeKey: "invitation-ready",
-          });
-        } else {
-          diagnostics.report({
-            stage: "client",
-            code: "client.landing.ready",
-            message: "没有可自动恢复的房间，显示首页",
-            details: { online: navigator.onLine },
-            dedupeKey: "landing-ready",
-          });
-        }
       } catch {
         if (!active) return;
-        setStoredRooms([]);
-        setInvitation(urlInvitation);
-        setNotice(urlInvitation
+        const fallbackRooms: StoredRoom[] = urlInvitation
+          ? [{ ...urlInvitation, lastOpenedAt: Date.now() }]
+          : [];
+        setStoredRooms(fallbackRooms);
+        setActiveRoomId(urlInvitation?.roomId ?? "");
+        setGlobalNotice(urlInvitation
           ? "IndexedDB 不可用；当前仍可聊天，但刷新后不能恢复。"
           : "无法读取这台设备上的聊天，请检查浏览器是否允许 IndexedDB。");
-        diagnostics.report({
+        bootstrapDiagnostics.report({
           stage: "client",
           code: "client.storage.unavailable",
           level: "warn",
@@ -190,206 +173,132 @@ export function useTwoOnlyChat() {
     return () => {
       active = false;
     };
-  }, [diagnostics]);
+  }, [bootstrapDiagnostics]);
 
   useEffect(() => {
-    if (!roomId || !secret) return;
+    const expectedRooms = new Map(storedRooms.map((room) => [room.roomId, room]));
+    const initialSnapshots: Record<string, RoomRuntimeSnapshot> = {};
+    const removedRoomIds: string[] = [];
+    const newRuntimes: RoomRuntime[] = [];
 
-    let active = true;
-    let transport: ReturnType<typeof createSignalTransport> | null = null;
-    diagnostics.report({
-      stage: "client",
-      code: "client.bootstrap.start",
-      message: "开始初始化加密聊天连接",
-      details: { protocol: SIGNAL_POLICY.protocolVersion, online: navigator.onLine },
-    });
-    const activeCrypto = {
-      roomId,
-      crypto: createMessageCrypto(secret),
-    };
-    messageCryptoRef.current = activeCrypto;
-    diagnostics.report({
-      stage: "client",
-      code: "client.crypto.ready",
-      level: "success",
-      message: "本地消息加密器已就绪",
-    });
+    for (const [roomId, runtime] of runtimesRef.current) {
+      const expected = expectedRooms.get(roomId);
+      if (expected?.secret === runtime.secret) continue;
+      runtime.dispose();
+      runtimesRef.current.delete(roomId);
+      removedRoomIds.push(roomId);
+    }
 
-    const acceptWire = async (wire: EncryptedWire) => {
-      let message: ChatMessage;
-      try {
-        message = { ...await activeCrypto.crypto.decrypt(wire), author: "peer" };
-      } catch {
-        if (active) setNotice("收到一条无法解密的消息，请核对邀请链接。");
-        return;
-      }
-      if (!active) return;
-      setMessages((current) => current.some((item) => item.id === message.id)
-        ? current
-        : [...current, message].sort((a, b) => a.createdAt - b.createdAt));
-      try {
-        await persistEncryptedMessage(roomId, wire, "peer");
-      } catch {
-        if (active) setNotice("本机存储空间不可用，这条消息只保留在当前页面中。");
-      }
-    };
-
-    let session: WebRtcSession | null = null;
-    void resolveIceConfiguration(diagnostics.report).then(({ configuration, turnConfigured }) => {
-      if (!active) return;
-      const createdSession = new WebRtcSession({
-        participantId,
-        iceConfiguration: configuration,
-        turnConfigured,
-        sendSignal: (message) => transport?.send(message),
-        onWire: (wire) => void acceptWire(wire),
-        onConnectionChange: (state, mode) => {
-          setConnection(state);
-          setConnectionMode(mode);
-          transport?.setNegotiationActive(state !== "connected");
-        },
-        onNotice: setNotice,
-        onDiagnostic: diagnostics.report,
-      });
-      session = createdSession;
-      sessionRef.current = createdSession;
-
-      const createdTransport = createSignalTransport({
-        roomId,
-        participantId,
-        secret,
-        onMessage: createdSession.handleSignal,
-        onDiagnostic: diagnostics.report,
-        onStatus: (status) => {
-          if (status === "subscribed") createdSession.onSignalReady();
-          else createdSession.onSignalUnavailable();
+    for (const room of storedRooms) {
+      if (runtimesRef.current.has(room.roomId)) continue;
+      const runtime = new RoomRuntime({
+        room,
+        onChange: (snapshot) => {
+          if (!mountedRef.current) return;
+          setRoomSnapshots((current) => ({ ...current, [snapshot.roomId]: snapshot }));
         },
       });
-      transport = createdTransport;
-      createdTransport.start();
-    });
+      runtimesRef.current.set(room.roomId, runtime);
+      initialSnapshots[room.roomId] = runtime.getSnapshot();
+      newRuntimes.push(runtime);
+    }
 
-    void loadEncryptedHistory(roomId).then((records) => Promise.all(
-      records.map(async ({ wire, localDirection }) => ({
-        ...await activeCrypto.crypto.decrypt(wire),
-        author: localDirection,
-      } satisfies ChatMessage)),
-    )).then((history) => {
-      if (!active) return;
-      setMessages((current) => {
-        const merged = new Map(history.map((message) => [message.id, message]));
-        for (const message of current) merged.set(message.id, message);
-        return [...merged.values()].sort((a, b) => a.createdAt - b.createdAt);
+    if (removedRoomIds.length || newRuntimes.length) {
+      setRoomSnapshots((current) => {
+        const next = { ...current };
+        for (const roomId of removedRoomIds) delete next[roomId];
+        Object.assign(next, initialSnapshots);
+        return next;
       });
-    }).catch(() => {
-      if (active) setNotice("无法读取这台设备上的聊天记录。");
-    });
-
-    return () => {
-      active = false;
-      diagnostics.report({
-        stage: "client",
-        code: "client.bootstrap.dispose",
-        message: "释放当前房间的连接资源",
-      });
-      transport?.dispose();
-      session?.dispose();
-      if (sessionRef.current === session) sessionRef.current = null;
-      if (messageCryptoRef.current === activeCrypto) messageCryptoRef.current = null;
-    };
-  }, [diagnostics, participantId, roomId, secret]);
+    }
+    for (const runtime of newRuntimes) runtime.start();
+  }, [storedRooms]);
 
   const reconnect = useCallback(() => {
-    diagnostics.report({
-      stage: "client",
-      code: "client.reconnect.requested",
-      message: "客户端请求立即重新握手",
-      details: { online: navigator.onLine },
-    });
-    sessionRef.current?.reconnect(false);
-  }, [diagnostics]);
-
-  useEffect(() => {
-    window.addEventListener("online", reconnect);
-    const onOffline = () => diagnostics.report({
-      stage: "client",
-      code: "client.network.offline",
-      level: "warn",
-      message: "浏览器报告网络离线",
-    });
-    window.addEventListener("offline", onOffline);
-    return () => {
-      window.removeEventListener("online", reconnect);
-      window.removeEventListener("offline", onOffline);
-    };
-  }, [diagnostics, reconnect]);
-
-  useEffect(() => () => {
-    if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
+    runtimesRef.current.get(activeRoomIdRef.current)?.reconnect();
   }, []);
 
+  useEffect(() => {
+    const reconnectAll = () => {
+      for (const runtime of runtimesRef.current.values()) runtime.reconnect();
+    };
+    const reportOffline = () => {
+      for (const runtime of runtimesRef.current.values()) runtime.reportOffline();
+    };
+    window.addEventListener("online", reconnectAll);
+    window.addEventListener("offline", reportOffline);
+    return () => {
+      window.removeEventListener("online", reconnectAll);
+      window.removeEventListener("offline", reportOffline);
+    };
+  }, []);
+
+  const activeRoom = storedRooms.find((room) => room.roomId === activeRoomId);
+  const activeSnapshot = activeRoom ? roomSnapshots[activeRoom.roomId] : undefined;
+  const connection = activeSnapshot?.connection ?? "waiting";
+  const connectionMode = activeSnapshot?.connectionMode ?? "正在建立房间连接";
+  const messages = activeSnapshot?.messages ?? EMPTY_MESSAGES;
+  const notice = activeSnapshot?.notice || globalNotice;
+  const diagnostics = activeSnapshot?.diagnostics ?? bootstrapDiagnostics;
+  const invitation: RoomInvitation | null = activeRoom
+    ? { roomId: activeRoom.roomId, secret: activeRoom.secret }
+    : null;
   const inviteUrl = invitation && typeof window !== "undefined"
     ? createRoomUrl(window.location.origin, invitation)
     : "";
-  const safetyCode = secret ? createSafetyCode(secret) : "";
+  const safetyCode = activeRoom ? createSafetyCode(activeRoom.secret) : "";
+  const copied = copiedRoomId === activeRoomId;
 
   const activateInvitation = (nextInvitation: RoomInvitation, nextNotice = "") => {
     cancelRecording();
-    sessionRef.current?.dispose();
-    sessionRef.current = null;
-    messageCryptoRef.current = null;
     window.history.replaceState(null, "", createRoomUrl(window.location.origin, nextInvitation));
-    setParticipantId(createParticipantId());
-    setInvitation(nextInvitation);
-    setConnection("waiting");
-    setConnectionMode("等待另一位成员");
-    setMessages([]);
+    activeRoomIdRef.current = nextInvitation.roomId;
+    setActiveRoomId(nextInvitation.roomId);
     setDraft("");
-    setCopied(false);
-    setNotice(nextNotice);
+    setCopiedRoomId("");
+    setGlobalNotice("");
+    if (nextNotice) {
+      const runtime = runtimesRef.current.get(nextInvitation.roomId);
+      if (runtime) runtime.setNotice(nextNotice);
+      else setGlobalNotice(nextNotice);
+    }
   };
 
   const createRoom = () => {
-    const nextInvitation = createRoomInvitation();
+    const nextInvitation = createUniqueRoomInvitation(storedRooms);
+    const pendingRoom: StoredRoom = { ...nextInvitation, lastOpenedAt: Date.now() };
+    setStoredRooms((current) => replaceStoredRoom(current, pendingRoom));
     activateInvitation(nextInvitation);
     void upsertStoredRoom(nextInvitation)
       .then((room) => setStoredRooms((current) => replaceStoredRoom(current, room)))
-      .catch(() => setNotice("无法保存恢复密钥，请保留当前完整邀请链接。"));
-    diagnostics.report({
+      .catch(() => setRoomNotice(nextInvitation.roomId, "无法保存恢复密钥，请保留当前完整邀请链接。"));
+    bootstrapDiagnostics.report({
       stage: "client",
       code: "client.room.created",
-      message: "已创建新的无角色双人会话",
+      message: "已创建新的双人房间，原有房间继续保持连接",
       details: { protocol: SIGNAL_POLICY.protocolVersion },
     });
   };
 
   const createFreshRoom = () => {
-    if (!window.confirm("创建新聊天将离开当前会话；已保存的记录仍保留在本机。继续吗？")) return;
+    if (!window.confirm("创建一个新的双人聊天？当前房间会继续保持连接。")) return;
     createRoom();
   };
 
   const openStoredRoom = (targetRoomId: string) => {
-    if (targetRoomId === roomId) return;
+    if (targetRoomId === activeRoomIdRef.current) return;
     const savedRoom = storedRooms.find((room) => room.roomId === targetRoomId);
     if (!savedRoom) {
-      setNotice("这台设备上没有保存这个聊天。");
+      setActiveNotice("这台设备上没有保存这个聊天。");
       return;
     }
     activateInvitation(
       { roomId: savedRoom.roomId, secret: savedRoom.secret },
-      "已从这台设备恢复聊天。",
+      "已切换聊天，其他房间仍保持连接。",
     );
     void upsertStoredRoom(savedRoom)
-      .then((room) => {
-        setStoredRooms((current) => replaceStoredRoom(current, room));
-      })
-      .catch(() => setNotice("无法更新这个本机会话。"));
-    diagnostics.report({
-      stage: "client",
-      code: "client.room.restored",
-      level: "success",
-      message: "用户从本机会话列表恢复聊天",
-    });
+      .then((room) => setStoredRooms((current) => replaceStoredRoom(current, room)))
+      .catch(() => setRoomNotice(savedRoom.roomId, "无法更新这个本机会话。"));
   };
 
   const submitText = (event: FormEvent) => {
@@ -405,66 +314,73 @@ export function useTwoOnlyChat() {
     event.target.value = "";
     if (!file) return;
     if (file.size > CHAT_POLICY.maxAttachmentBytes) {
-      setNotice(`为了保证点对点传输稳定，当前版本仅支持 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)} 以内的图片。`);
+      setActiveNotice(`为了保证点对点传输稳定，当前版本仅支持 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)} 以内的图片。`);
       return;
     }
-    const activeCrypto = messageCryptoRef.current;
-    if (!activeCrypto) return;
+    const targetRoomId = activeRoomIdRef.current;
+    const runtime = runtimesRef.current.get(targetRoomId);
+    if (!runtime) return;
     const content = await readAsDataUrl(file);
-    if (messageCryptoRef.current !== activeCrypto) return;
-    await sendMessage("image", content, file.name);
+    if (activeRoomIdRef.current !== targetRoomId || runtimesRef.current.get(targetRoomId) !== runtime) return;
+    await runtime.send("image", content, profile, file.name);
   };
 
   const sendSticker = async (src: string, label: string) => {
-    const activeCrypto = messageCryptoRef.current;
-    if (!activeCrypto) return false;
+    const targetRoomId = activeRoomIdRef.current;
+    const runtime = runtimesRef.current.get(targetRoomId);
+    if (!runtime) return false;
     try {
       const response = await fetch(src);
       if (!response.ok) throw new Error(`sticker ${response.status}`);
       const blob = await response.blob();
       if (blob.size > CHAT_POLICY.maxAttachmentBytes) {
-        setNotice("这个表情包文件过大，无法发送。");
+        setActiveNotice("这个表情包文件过大，无法发送。");
         return false;
       }
       const content = await readAsDataUrl(blob);
-      if (messageCryptoRef.current !== activeCrypto) return false;
-      await sendMessage("image", content, `${label}.png`);
+      if (activeRoomIdRef.current !== targetRoomId || runtimesRef.current.get(targetRoomId) !== runtime) return false;
+      await runtime.send("image", content, profile, `${label}.png`);
       return true;
     } catch {
-      setNotice("表情包加载失败，请重试。");
+      setActiveNotice("表情包加载失败，请重试。");
       return false;
     }
   };
 
   const copyInvite = async () => {
     try {
-      if (!await copyText(inviteUrl)) throw new Error("copy failed");
-      setCopied(true);
+      if (!inviteUrl || !await copyText(inviteUrl)) throw new Error("copy failed");
+      setCopiedRoomId(activeRoomIdRef.current);
       if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = window.setTimeout(() => setCopied(false), UI_POLICY.inviteCopyFeedbackMs);
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = undefined;
+        setCopiedRoomId("");
+      }, UI_POLICY.inviteCopyFeedbackMs);
     } catch {
-      setNotice("复制失败，请从浏览器地址栏复制完整邀请链接。");
+      setActiveNotice("复制失败，请从浏览器地址栏复制完整邀请链接。");
     }
   };
 
   const clearLocalHistory = () => {
-    if (!messages.length) {
-      setNotice("这台设备上还没有聊天记录。");
+    const runtime = runtimesRef.current.get(activeRoomIdRef.current);
+    if (!runtime || !runtime.getSnapshot().messages.length) {
+      setActiveNotice("这台设备上还没有聊天记录。");
       return;
     }
-    if (!window.confirm("只清除这台设备上的聊天记录，且无法恢复。确定继续吗？")) return;
-    void clearEncryptedHistory(roomId)
-      .then(() => {
-        setMessages([]);
-        setNotice("这台设备上的加密历史已经清除。");
-      })
-      .catch(() => setNotice("清除失败，请检查浏览器是否允许本地存储。"));
+    if (!window.confirm("只清除这台设备上当前聊天的记录，且无法恢复。确定继续吗？")) return;
+    void runtime.clearHistory()
+      .catch(() => setActiveNotice("清除失败，请检查浏览器是否允许本地存储。"));
   };
 
-  const conversations = storedRooms.map((room) => ({
-    roomId: room.roomId,
-    lastOpenedAt: room.lastOpenedAt,
-  }));
+  const conversations = storedRooms.map((room) => {
+    const snapshot = roomSnapshots[room.roomId];
+    return {
+      roomId: room.roomId,
+      lastOpenedAt: room.lastOpenedAt,
+      connection: snapshot?.connection ?? "waiting",
+      preview: messagePreview(snapshot?.messages.at(-1), snapshot?.connectionMode ?? "正在建立连接"),
+    };
+  });
 
   const updateProfile = (nextProfile: ChatProfile) => {
     setProfile(nextProfile);
@@ -472,7 +388,7 @@ export function useTwoOnlyChat() {
   };
 
   return {
-    view: invitation === undefined ? "loading" : invitation ? "chat" : "landing",
+    view: activeRoomId === undefined ? "loading" : activeRoom ? "chat" : "landing",
     connection,
     connectionMode,
     messages,
@@ -482,11 +398,14 @@ export function useTwoOnlyChat() {
     copied,
     isRecording,
     safetyCode,
-    activeRoomId: roomId,
+    activeRoomId: activeRoom?.roomId ?? "",
     conversations,
     updateProfile,
     setDraft,
-    clearNotice: () => setNotice(""),
+    clearNotice: () => {
+      setGlobalNotice("");
+      runtimesRef.current.get(activeRoomIdRef.current)?.setNotice("");
+    },
     createRoom,
     createFreshRoom,
     openStoredRoom,

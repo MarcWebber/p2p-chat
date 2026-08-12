@@ -100,7 +100,7 @@ channel
 - `persistSession: false`：项目不使用 Supabase Auth，不在本地维护登录会话。
 - `ack: true`：要求 Realtime 服务确认已接收 Broadcast。
 - 订阅成功后两个页面才开始发送 protocol v2 `hello`，避免信令通道尚未就绪时丢失对端发现消息。
-- 卸载或切换房间时调用 `removeChannel` 释放连接。
+- 房间凭证被移除、替换或页面卸载时调用 `removeChannel`；仅切换当前界面不会释放其他房间连接。
 
 官方文档说明：客户端订阅后，Broadcast 通过 WebSocket 发送；公共频道允许未登录客户端订阅。参见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast) 与 [Realtime Concepts](https://supabase.com/docs/guides/realtime/concepts)。这也是当前 MVP 快速建连和严格身份控制之间的主要取舍。
 

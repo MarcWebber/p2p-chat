@@ -164,6 +164,7 @@ messages   按 roomId 保存 EncryptedWire 和本机方向
 ### 未保护或未实现
 
 - 没有账号、设备公钥、数字签名或长期身份认证；
+- 不读取或保存 MAC、deviceId、浏览器指纹；同一浏览器恢复聊天只依赖 IndexedDB 中的 `roomId + secret`；
 - 拿到完整邀请链接的人同时拿到房间号和加密秘密；
 - 公共 Supabase topic 可被知道 roomId 的客户端订阅或干扰；
 - `participantId` 和 epoch 只做结构与轮次校验，没有验签；恶意订阅者可以冒充已有 peer 干扰建连或可用性，但仍不能因此解密没有拿到密钥的聊天正文；

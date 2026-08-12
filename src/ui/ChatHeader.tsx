@@ -88,7 +88,7 @@ export function ChatHeader({
         >
           {conversations.map((room) => (
             <option value={room.roomId} key={room.roomId}>
-              聊天 {room.roomId.slice(0, 5)}
+              聊天 {room.roomId.slice(0, 5)} · {room.connection === "connected" ? "已连接" : "连接中"}
             </option>
           ))}
         </select>
