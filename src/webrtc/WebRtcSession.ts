@@ -1,6 +1,5 @@
 import type { ConnectionState, EncryptedWire } from "@/src/chat/types";
 import {
-  CHAT_POLICY,
   RESOURCE_NAMES,
   RTC_POLICY,
   SIGNAL_POLICY,
@@ -154,26 +153,10 @@ export class WebRtcSession {
     else run();
   }
 
-  async send(wire: EncryptedWire) {
-    const channel = this.channel;
-    if (!channel || channel.readyState !== "open") return false;
+  send(wire: EncryptedWire) {
+    if (!this.channel || this.channel.readyState !== "open") return false;
     const packets = encodeEncryptedWire(wire);
-    for (const packet of packets) {
-      if (this.channel !== channel || channel.readyState !== "open") return false;
-      if (channel.bufferedAmount >= CHAT_POLICY.dataChannelHighWaterBytes) {
-        if (!await this.waitForChannelDrain(channel)) return false;
-      }
-      try {
-        channel.send(packet);
-      } catch (error: unknown) {
-        this.trace("data", "data.send.failed", "DataChannel 发送失败", {
-          level: "error",
-          details: diagnosticErrorDetails(error),
-        });
-        this.options.onNotice("消息传输中断，请等待连接恢复后重试。");
-        return false;
-      }
-    }
+    for (const packet of packets) this.channel.send(packet);
     return true;
   }
 
@@ -335,30 +318,6 @@ export class WebRtcSession {
         this.options.onNotice("收到了一条格式不正确的传输数据。");
       }
     };
-  }
-
-  private waitForChannelDrain(channel: RTCDataChannel) {
-    if (channel.readyState !== "open") return Promise.resolve(false);
-    channel.bufferedAmountLowThreshold = CHAT_POLICY.dataChannelLowWaterBytes;
-    if (channel.bufferedAmount <= channel.bufferedAmountLowThreshold) return Promise.resolve(true);
-
-    return new Promise<boolean>((resolve) => {
-      let timer: number | undefined;
-      const finish = (ready: boolean) => {
-        channel.removeEventListener("bufferedamountlow", onLow);
-        channel.removeEventListener("close", onClose);
-        if (timer !== undefined) window.clearTimeout(timer);
-        resolve(ready);
-      };
-      const onLow = () => finish(channel.readyState === "open");
-      const onClose = () => finish(false);
-      channel.addEventListener("bufferedamountlow", onLow, { once: true });
-      channel.addEventListener("close", onClose, { once: true });
-      timer = window.setTimeout(
-        () => finish(false),
-        CHAT_POLICY.dataChannelDrainTimeoutMs,
-      );
-    });
   }
 
   private markConnected() {

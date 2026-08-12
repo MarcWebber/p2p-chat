@@ -43,8 +43,7 @@ function createUniqueRoomInvitation(rooms: StoredRoom[]) {
 function messagePreview(message: ChatMessage | undefined, connectionMode: string) {
   if (!message) return connectionMode;
   if (message.kind === "text") return message.content;
-  if (message.kind === "audio") return "[语音消息]";
-  return message.kind === "video" ? "[视频]" : "[图片]";
+  return message.kind === "audio" ? "[语音消息]" : "[图片]";
 }
 
 export function useTwoOnlyChat() {
@@ -349,30 +348,6 @@ export function useTwoOnlyChat() {
     await runtime.send("image", content, profile, file.name);
   };
 
-  const chooseVideo = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (!file.type.startsWith("video/")) {
-      setActiveNotice("请选择视频文件。");
-      return;
-    }
-    if (file.size > CHAT_POLICY.maxVideoBytes) {
-      setActiveNotice(`为了保证点对点传输稳定，当前视频不能超过 ${formatBytes(CHAT_POLICY.maxVideoBytes)}。`);
-      return;
-    }
-    const targetRoomId = activeRoomIdRef.current;
-    const runtime = runtimesRef.current.get(targetRoomId);
-    if (!runtime) return;
-    try {
-      const content = await readAsDataUrl(file);
-      if (activeRoomIdRef.current !== targetRoomId || runtimesRef.current.get(targetRoomId) !== runtime) return;
-      await runtime.send("video", content, profile, file.name);
-    } catch {
-      setRoomNotice(targetRoomId, "无法读取或发送这个视频，请换一个更小的视频重试。");
-    }
-  };
-
   const sendSticker = async (src: string, label: string) => {
     const targetRoomId = activeRoomIdRef.current;
     const runtime = runtimesRef.current.get(targetRoomId);
@@ -491,7 +466,6 @@ export function useTwoOnlyChat() {
     updateStoredRoom,
     submitText,
     chooseImage,
-    chooseVideo,
     sendSticker,
     startRecording,
     stopRecording,

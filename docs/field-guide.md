@@ -45,7 +45,7 @@ flowchart LR
 
 第二条是**路径发现链路**：ICE 调用 STUN/TURN，收集和测试候选路径。信令服务器不会替浏览器“打洞”。
 
-第三条是**数据链路**：连接建立后，文字、图片、语音和视频的密文走 `RTCDataChannel`。直连成功时是浏览器到浏览器；直连失败时是浏览器到 TURN 再到浏览器。
+第三条是**数据链路**：连接建立后，文字、图片和语音的密文走 `RTCDataChannel`。直连成功时是浏览器到浏览器；直连失败时是浏览器到 TURN 再到浏览器。
 
 WebRTC 官方入门也把信令定义为应用自己提供的异步交换通道，并建议使用 Trickle ICE 边收集边发送 Candidate，以缩短建连时间：[Peer connections](https://webrtc.org/getting-started/peer-connections)。
 
@@ -190,7 +190,7 @@ sequenceDiagram
   R->>R: 渲染明文
 ```
 
-文字、图片、语音和视频最后都变成同一种 `ChatMessage`。图片和视频由 `FileReader` 转成 Data URL；语音由 `MediaRecorder` 录制后转成 Data URL。这样协议层简单，但 Base64 会增大体积，也是 MVP 为开发速度付出的成本。
+文字、图片和语音最后都变成同一种 `ChatMessage`。图片由 `FileReader` 转成 Data URL；语音由 `MediaRecorder` 录制后转成 Data URL。这样协议层简单，但 Base64 会增大体积，也是 MVP 为开发速度付出的成本。
 
 ### 会话秘密放在哪里
 

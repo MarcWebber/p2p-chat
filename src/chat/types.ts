@@ -1,6 +1,6 @@
 export type ConnectionState = "waiting" | "connecting" | "connected" | "disconnected";
 
-export type MessageKind = "text" | "image" | "audio" | "video";
+export type MessageKind = "text" | "image" | "audio";
 
 export type MessageAuthor = "self" | "peer";
 

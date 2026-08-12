@@ -34,9 +34,16 @@ type RoomRuntimeOptions = {
 };
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
-  const merged = new Map(current.map((message) => [message.id, message]));
-  for (const message of incoming) merged.set(message.id, message);
+  const merged = new Map<string, ChatMessage>();
+  for (const message of [...current, ...incoming]) {
+    if (isSupportedMessage(message)) merged.set(message.id, message);
+  }
   return [...merged.values()].sort((left, right) => left.createdAt - right.createdAt);
+}
+
+function isSupportedMessage(message: ChatMessage) {
+  const kind = (message as { kind?: unknown }).kind;
+  return kind === "text" || kind === "image" || kind === "audio";
 }
 
 export class RoomRuntime {
@@ -134,7 +141,7 @@ export class RoomRuntime {
     if (this.disposed) return false;
 
     this.publish({ messages: mergeMessages(this.snapshot.messages, [message]) });
-    const delivered = this.session ? await this.session.send(wire) : false;
+    const delivered = Boolean(this.session?.send(wire));
     if (!delivered) {
       this.setNotice("消息已加密保存在本机；对方连接后发送的新消息会实时送达。");
     }
@@ -201,6 +208,7 @@ export class RoomRuntime {
       return;
     }
     if (this.disposed) return;
+    if (!isSupportedMessage(message)) return;
     this.publish({ messages: mergeMessages(this.snapshot.messages, [message]) });
     try {
       await persistEncryptedMessage(this.roomId, wire, "peer");

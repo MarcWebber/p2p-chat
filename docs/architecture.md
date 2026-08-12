@@ -191,7 +191,7 @@ twoonly/
 │   │   ├── ConnectionDiagnosticsPanel.tsx # 六阶段连接诊断面板
 │   │   ├── ChatSidebar.tsx         # 当前会话摘要
 │   │   ├── MessageList.tsx         # 消息展示
-│   │   └── MessageComposer.tsx     # 文字/图片/语音/视频输入
+│   │   └── MessageComposer.tsx     # 文字/图片/语音输入
 │   ├── utils/
 │   │   ├── browser.ts              # 剪贴板与 Data URL
 │   │   ├── format.ts               # 时间、容量与短 ID 格式

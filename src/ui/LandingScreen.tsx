@@ -24,7 +24,7 @@ export function LandingScreen({
           <div className="start-features">
             <span>端到端加密</span><i />
             <span>本地保存</span><i />
-            <span>图片、语音和视频</span>
+            <span>图片和语音</span>
           </div>
           <p className="prototype-note">跨设备连接 · 双路加密信令</p>
           {notice ? (
@@ -40,7 +40,7 @@ export function LandingScreen({
           <ol className="wiki-steps">
             <li><b>创建聊天</b><span>点击左侧按钮，生成一条双方通用的双人邀请链接。</span></li>
             <li><b>分享完整链接</b><span>把同一链接发给另一人，链接末尾密钥不能遗漏。</span></li>
-            <li><b>等待安全连接</b><span>状态变绿后即可发送文字、图片、语音和视频。</span></li>
+            <li><b>等待安全连接</b><span>状态变绿后即可发送文字、图片和语音。</span></li>
           </ol>
           <details open>
             <summary>连接断开怎么办？</summary>

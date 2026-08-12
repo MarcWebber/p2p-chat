@@ -61,7 +61,6 @@ export function ChatScreen(props: TwoOnlyChatController) {
           onDraftChange={props.setDraft}
           onSubmit={props.submitText}
           onChooseImage={props.chooseImage}
-          onChooseVideo={props.chooseVideo}
           onSendSticker={props.sendSticker}
           onStartRecording={props.startRecording}
           onStopRecording={props.stopRecording}

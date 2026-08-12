@@ -59,11 +59,6 @@ export function MessageList({
                 {message.kind === "text" ? <p>{message.content}</p> : null}
                 {message.kind === "image" ? <img src={message.content} alt={message.fileName || "聊天图片"} /> : null}
                 {message.kind === "audio" ? <audio src={message.content} controls preload="metadata" /> : null}
-                {message.kind === "video" ? (
-                  <video src={message.content} controls playsInline preload="metadata">
-                    你的浏览器暂时无法播放这个视频。
-                  </video>
-                ) : null}
               </div>
             </div>
           </article>

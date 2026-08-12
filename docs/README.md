@@ -1,6 +1,6 @@
 # TwoOnly 技术文档
 
-TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建并部署到 Vercel；Supabase Realtime 与同源 Vercel HTTPS 共同交换 WebRTC 建连信令；文字、图片、语音和视频经浏览器本地 AES-GCM 加密后，通过 WebRTC DataChannel 传输，并以密文保存在各自设备的 IndexedDB。
+TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建并部署到 Vercel；Supabase Realtime 与同源 Vercel HTTPS 共同交换 WebRTC 建连信令；文字、图片和语音经浏览器本地 AES-GCM 加密后，通过 WebRTC DataChannel 传输，并以密文保存在各自设备的 IndexedDB。
 
 ## 推荐阅读顺序
 
@@ -40,7 +40,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 | 应用层加密 | Web Crypto API，随机会话秘密经 SHA-256 导入为 AES-GCM 密钥，每条消息使用独立 12 字节 IV |
 | 本机恢复 | IndexedDB 按 `roomId` 唯一保存房间凭证和 `{id, iv, data}` 密文；自动恢复全部房间，每个房间最多 200 条 |
 | 多聊天 | 每个已保存房间拥有独立信令和 WebRTC 运行时；切换界面不会释放其他房间连接 |
-| 消息类型 | 文字、图片、语音、视频；图片/语音上限 1.5 MB，视频上限 8 MB |
+| 消息类型 | 文字、图片、语音；图片/语音单条上限 1.5 MB |
 | 大消息处理 | 加密后 JSON 按 12,000 字符分片，在接收端重组并解密 |
 | 部署 | Vercel 页面、同源 HTTPS 信令与 Cloudflare TURN 凭证接口；Supabase 同时提供 WebSocket 信令 |
 
