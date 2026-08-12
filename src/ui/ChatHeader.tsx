@@ -1,8 +1,8 @@
-import type { FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
 import type { ChatProfile, ConnectionState, ConversationSummary } from "@/src/chat/types";
-
-const AVATAR_OPTIONS = ["🙂", "😎", "🐱", "🐶", "🦊", "🐼", "👾", "🌙"];
+import { AvatarContent } from "@/src/ui/AvatarContent";
+import { AvatarUploader } from "@/src/ui/AvatarUploader";
 
 type ChatHeaderProps = {
   profile: ChatProfile;
@@ -16,8 +16,41 @@ type ChatHeaderProps = {
   conversations: ConversationSummary[];
   activeRoomId: string;
   onOpenRoom: (roomId: string) => void;
+  onEditRoom: (roomId: string) => void;
   onProfileChange: (profile: ChatProfile) => void;
 };
+
+function ProfileEditor({
+  profile,
+  onProfileChange,
+}: Pick<ChatHeaderProps, "profile" | "onProfileChange">) {
+  const [avatar, setAvatar] = useState(profile.avatar);
+
+  const saveProfile = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const nickname = String(values.get("nickname")).trim();
+    if (!nickname || !avatar) return;
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    onProfileChange({ nickname, avatar });
+  };
+
+  return (
+    <form className="profile-editor" onSubmit={saveProfile}>
+      <strong>本机资料</strong>
+      <label className="profile-name">
+        <span>昵称</span>
+        <input name="nickname" defaultValue={profile.nickname} maxLength={16} required />
+      </label>
+      <fieldset>
+        <legend>头像</legend>
+        <AvatarUploader value={avatar} fallback="🙂" title="裁切个人头像" onChange={setAvatar} />
+      </fieldset>
+      <small>头像会裁成 200 × 200 并保存在本机 IndexedDB；发消息时会加密展示给对方。</small>
+      <button type="submit">保存</button>
+    </form>
+  );
+}
 
 export function ChatHeader({
   profile,
@@ -31,54 +64,27 @@ export function ChatHeader({
   conversations,
   activeRoomId,
   onOpenRoom,
+  onEditRoom,
   onProfileChange,
 }: ChatHeaderProps) {
-  const saveProfile = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const values = new FormData(event.currentTarget);
-    const nickname = String(values.get("nickname")).trim();
-    const avatar = String(values.get("avatar"));
-    if (!nickname || !avatar) return;
-    event.currentTarget.closest("details")?.removeAttribute("open");
-    onProfileChange({ nickname, avatar });
-  };
+  const activeConversation = conversations.find((room) => room.roomId === activeRoomId);
 
   return (
     <header className="chat-header">
       <div>
-        <h2>双人聊天 <span className="member-count">2</span></h2>
+        <h2>{activeConversation?.title ?? "双人聊天"} <span className="member-count">2</span></h2>
         <p><span className={`status-dot ${connection}`} /> {connectionMode}</p>
       </div>
       <div className="header-actions">
         <details className="profile-menu">
           <summary className="profile-avatar" aria-label="设置昵称和头像" title={profile.nickname}>
-            {profile.avatar}
+            <AvatarContent value={profile.avatar} fallback="🙂" alt={`${profile.nickname}的头像`} />
           </summary>
-          <form className="profile-editor" key={`${profile.nickname}:${profile.avatar}`} onSubmit={saveProfile}>
-            <strong>本机资料</strong>
-            <label className="profile-name">
-              <span>昵称</span>
-              <input name="nickname" defaultValue={profile.nickname} maxLength={16} required />
-            </label>
-            <fieldset>
-              <legend>头像</legend>
-              <div className="profile-avatars">
-                {AVATAR_OPTIONS.map((avatar) => (
-                  <label key={avatar}>
-                    <input
-                      type="radio"
-                      name="avatar"
-                      value={avatar}
-                      defaultChecked={avatar === profile.avatar}
-                    />
-                    <span>{avatar}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <small>资料只保存在本机；发消息时会加密展示给对方。</small>
-            <button type="submit">保存</button>
-          </form>
+          <ProfileEditor
+            key={`${profile.nickname}:${profile.avatar}`}
+            profile={profile}
+            onProfileChange={onProfileChange}
+          />
         </details>
         <select
           className="mobile-room-select"
@@ -88,7 +94,7 @@ export function ChatHeader({
         >
           {conversations.map((room) => (
             <option value={room.roomId} key={room.roomId}>
-              聊天 {room.roomId.slice(0, 5)} · {room.connection === "connected" ? "已连接" : "连接中"}
+              {room.title} · {room.connection === "connected" ? "已连接" : "连接中"}
             </option>
           ))}
         </select>
@@ -99,6 +105,7 @@ export function ChatHeader({
         {connection === "disconnected" ? (
           <button className="retry-button header-retry" onClick={onReconnect}>立即重连</button>
         ) : null}
+        <button className="mobile-room-settings-button" onClick={() => onEditRoom(activeRoomId)}>设置</button>
         <button className="mobile-new-button" onClick={onCreateRoom}>新聊天</button>
       </div>
     </header>

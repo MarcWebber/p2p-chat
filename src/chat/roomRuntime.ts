@@ -134,7 +134,7 @@ export class RoomRuntime {
     if (this.disposed) return false;
 
     this.publish({ messages: mergeMessages(this.snapshot.messages, [message]) });
-    const delivered = Boolean(this.session?.send(wire));
+    const delivered = this.session ? await this.session.send(wire) : false;
     if (!delivered) {
       this.setNotice("消息已加密保存在本机；对方连接后发送的新消息会实时送达。");
     }

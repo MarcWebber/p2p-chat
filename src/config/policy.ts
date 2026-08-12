@@ -7,7 +7,12 @@ export const ROOM_POLICY = {
 
 export const CHAT_POLICY = {
   maxAttachmentBytes: 1_500_000,
+  maxVideoBytes: 8_000_000,
+  maxAvatarSourceBytes: 12_000_000,
   encryptedChunkCharacters: 12_000,
+  dataChannelHighWaterBytes: 512_000,
+  dataChannelLowWaterBytes: 128_000,
+  dataChannelDrainTimeoutMs: 15_000,
 } as const;
 
 export const DIAGNOSTICS_POLICY = {

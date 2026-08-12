@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { ChatMessage, ChatProfile, ConnectionState } from "@/src/chat/types";
+import { AvatarContent } from "@/src/ui/AvatarContent";
 import { formatMinuteTime } from "@/src/utils/format";
 
 type MessageListProps = {
@@ -45,13 +46,24 @@ export function MessageList({
         const messageProfile = mine ? profile : message.profile;
         return (
           <article className={`message-row ${mine ? "mine" : "theirs"}`} key={message.id}>
-            <div className="message-avatar">{messageProfile?.avatar ?? "Ta"}</div>
+            <div className="message-avatar">
+              <AvatarContent
+                value={messageProfile?.avatar}
+                fallback="Ta"
+                alt={`${messageProfile?.nickname ?? "对方"}的头像`}
+              />
+            </div>
             <div className="message-content">
               <div className="message-meta"><span>{messageProfile?.nickname ?? "对方"}</span><time>{formatMinuteTime(message.createdAt)}</time></div>
               <div className={`message-bubble ${message.kind}`}>
                 {message.kind === "text" ? <p>{message.content}</p> : null}
                 {message.kind === "image" ? <img src={message.content} alt={message.fileName || "聊天图片"} /> : null}
                 {message.kind === "audio" ? <audio src={message.content} controls preload="metadata" /> : null}
+                {message.kind === "video" ? (
+                  <video src={message.content} controls playsInline preload="metadata">
+                    你的浏览器暂时无法播放这个视频。
+                  </video>
+                ) : null}
               </div>
             </div>
           </article>

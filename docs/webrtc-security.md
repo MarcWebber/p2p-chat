@@ -108,7 +108,7 @@ AES-GCM 同时提供机密性和完整性校验；篡改 IV 或密文会导致 `
 
 当前没有把房间号、作者或协议版本放入 Additional Authenticated Data。若未来增加协议版本或可路由头部，应把这些不可加密但必须防篡改的字段加入 AAD。
 
-## 6. 消息、图片和语音
+## 6. 消息、图片、语音和视频
 
 统一明文结构：
 
@@ -126,7 +126,7 @@ type ChatMessage = {
 - 文字直接进入 `content`；
 - 图片通过 `FileReader.readAsDataURL` 转成 Data URL；
 - 语音通过 `getUserMedia({audio:true})` 和 `MediaRecorder` 录制，优先使用 WebM/Opus，再转成 Data URL；
-- 图片和语音在编码前限制为 1.5 MB，避免浏览器内存、本地存储和 DataChannel 队列失控。
+- 图片和语音在编码前限制为 1.5 MB，视频限制为 8 MB；较大消息按 DataChannel 缓冲水位分批发送，避免浏览器发送队列失控。
 
 消息 JSON 先整体加密，再把密文 JSON 按 12,000 字符切成 `ChunkPacket`。接收端按消息 ID 和序号重组，只有分片完整后才执行 AES-GCM 解密。
 

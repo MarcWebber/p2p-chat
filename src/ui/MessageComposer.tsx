@@ -19,6 +19,7 @@ type MessageComposerProps = {
   onDraftChange: (draft: string) => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
   onChooseImage: ChangeEventHandler<HTMLInputElement>;
+  onChooseVideo: ChangeEventHandler<HTMLInputElement>;
   onSendSticker: (src: string, label: string) => Promise<boolean>;
   onStartRecording: () => void;
   onStopRecording: () => void;
@@ -31,6 +32,7 @@ export function MessageComposer({
   onDraftChange,
   onSubmit,
   onChooseImage,
+  onChooseVideo,
   onSendSticker,
   onStartRecording,
   onStopRecording,
@@ -94,6 +96,10 @@ export function MessageComposer({
             <span aria-hidden>▧</span><span className="tool-label">图片</span>
             <input type="file" accept="image/*" onChange={onChooseImage} disabled={!connected} />
           </label>
+          <label className={`tool-button ${connected ? "" : "disabled"}`} title="发送视频">
+            <span aria-hidden>▷</span><span className="tool-label">视频</span>
+            <input type="file" accept="video/*" onChange={onChooseVideo} disabled={!connected} />
+          </label>
           <button
             type="button"
             className={`tool-button record ${isRecording ? "recording" : ""}`}
@@ -119,7 +125,7 @@ export function MessageComposer({
       </form>
       <p className="composer-hint">
         {connected
-          ? `支持表情、颜文字和图片表情包 · 图片/语音上限 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)}`
+          ? `图片/语音上限 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)} · 视频上限 ${formatBytes(CHAT_POLICY.maxVideoBytes)}`
           : "等待安全连接建立后即可发送"}
       </p>
     </>

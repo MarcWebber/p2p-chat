@@ -14,19 +14,23 @@ import {
 } from "@/src/room/invitation";
 import {
   listStoredRooms,
+  loadLocalProfile,
+  persistStoredRoomOrder,
+  saveLocalProfile,
+  updateStoredRoomMetadata,
   upsertStoredRoom,
   type StoredRoom,
 } from "@/src/storage/chatStorage";
 import { copyText, readAsDataUrl } from "@/src/utils/browser";
 import { formatBytes } from "@/src/utils/format";
 
-const PROFILE_KEY = "twoonly.profile";
+const LEGACY_PROFILE_KEY = "twoonly.profile";
 const DEFAULT_PROFILE: ChatProfile = { nickname: "我", avatar: "🙂" };
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
 function replaceStoredRoom(rooms: StoredRoom[], replacement: StoredRoom) {
   return [...rooms.filter((room) => room.roomId !== replacement.roomId), replacement]
-    .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
+    .sort((left, right) => left.order - right.order);
 }
 
 function createUniqueRoomInvitation(rooms: StoredRoom[]) {
@@ -39,7 +43,8 @@ function createUniqueRoomInvitation(rooms: StoredRoom[]) {
 function messagePreview(message: ChatMessage | undefined, connectionMode: string) {
   if (!message) return connectionMode;
   if (message.kind === "text") return message.content;
-  return message.kind === "audio" ? "[语音消息]" : "[图片]";
+  if (message.kind === "audio") return "[语音消息]";
+  return message.kind === "video" ? "[视频]" : "[图片]";
 }
 
 export function useTwoOnlyChat() {
@@ -79,16 +84,36 @@ export function useTwoOnlyChat() {
   });
 
   useEffect(() => {
-    const savedProfile = window.localStorage.getItem(PROFILE_KEY);
-    if (!savedProfile) return;
-    try {
-      const candidate = JSON.parse(savedProfile) as Partial<ChatProfile>;
-      if (typeof candidate.nickname === "string" && typeof candidate.avatar === "string") {
-        setProfile({ nickname: candidate.nickname, avatar: candidate.avatar });
+    let active = true;
+    void (async () => {
+      let savedProfile = await loadLocalProfile();
+      if (!savedProfile) {
+        const legacyProfile = window.localStorage.getItem(LEGACY_PROFILE_KEY);
+        if (legacyProfile) {
+          try {
+            const candidate = JSON.parse(legacyProfile) as Partial<ChatProfile>;
+            if (
+              typeof candidate.nickname === "string"
+              && candidate.nickname.trim()
+              && typeof candidate.avatar === "string"
+              && candidate.avatar
+            ) {
+              savedProfile = { nickname: candidate.nickname.trim(), avatar: candidate.avatar };
+              await saveLocalProfile(savedProfile);
+            }
+          } catch {
+            // Ignore malformed legacy localStorage data.
+          }
+          window.localStorage.removeItem(LEGACY_PROFILE_KEY);
+        }
       }
-    } catch {
-      window.localStorage.removeItem(PROFILE_KEY);
-    }
+      if (active && savedProfile) setProfile(savedProfile);
+    })().catch(() => {
+      // Room bootstrap reports IndexedDB availability separately.
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -119,9 +144,7 @@ export function useTwoOnlyChat() {
             ? rooms.find((room) => room.roomId === requestedRoomId)
             : rooms[0];
           if (savedRoom) {
-            const openedRoom = await upsertStoredRoom(savedRoom);
-            rooms = replaceStoredRoom(rooms, openedRoom);
-            nextInvitation = { roomId: openedRoom.roomId, secret: openedRoom.secret };
+            nextInvitation = { roomId: savedRoom.roomId, secret: savedRoom.secret };
             window.history.replaceState(
               null,
               "",
@@ -152,7 +175,7 @@ export function useTwoOnlyChat() {
       } catch {
         if (!active) return;
         const fallbackRooms: StoredRoom[] = urlInvitation
-          ? [{ ...urlInvitation, lastOpenedAt: Date.now() }]
+          ? [{ ...urlInvitation, lastOpenedAt: Date.now(), order: 0 }]
           : [];
         setStoredRooms(fallbackRooms);
         setActiveRoomId(urlInvitation?.roomId ?? "");
@@ -266,7 +289,11 @@ export function useTwoOnlyChat() {
 
   const createRoom = () => {
     const nextInvitation = createUniqueRoomInvitation(storedRooms);
-    const pendingRoom: StoredRoom = { ...nextInvitation, lastOpenedAt: Date.now() };
+    const pendingRoom: StoredRoom = {
+      ...nextInvitation,
+      lastOpenedAt: Date.now(),
+      order: storedRooms.length,
+    };
     setStoredRooms((current) => replaceStoredRoom(current, pendingRoom));
     activateInvitation(nextInvitation);
     void upsertStoredRoom(nextInvitation)
@@ -296,9 +323,6 @@ export function useTwoOnlyChat() {
       { roomId: savedRoom.roomId, secret: savedRoom.secret },
       "已切换聊天，其他房间仍保持连接。",
     );
-    void upsertStoredRoom(savedRoom)
-      .then((room) => setStoredRooms((current) => replaceStoredRoom(current, room)))
-      .catch(() => setRoomNotice(savedRoom.roomId, "无法更新这个本机会话。"));
   };
 
   const submitText = (event: FormEvent) => {
@@ -323,6 +347,30 @@ export function useTwoOnlyChat() {
     const content = await readAsDataUrl(file);
     if (activeRoomIdRef.current !== targetRoomId || runtimesRef.current.get(targetRoomId) !== runtime) return;
     await runtime.send("image", content, profile, file.name);
+  };
+
+  const chooseVideo = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("video/")) {
+      setActiveNotice("请选择视频文件。");
+      return;
+    }
+    if (file.size > CHAT_POLICY.maxVideoBytes) {
+      setActiveNotice(`为了保证点对点传输稳定，当前视频不能超过 ${formatBytes(CHAT_POLICY.maxVideoBytes)}。`);
+      return;
+    }
+    const targetRoomId = activeRoomIdRef.current;
+    const runtime = runtimesRef.current.get(targetRoomId);
+    if (!runtime) return;
+    try {
+      const content = await readAsDataUrl(file);
+      if (activeRoomIdRef.current !== targetRoomId || runtimesRef.current.get(targetRoomId) !== runtime) return;
+      await runtime.send("video", content, profile, file.name);
+    } catch {
+      setRoomNotice(targetRoomId, "无法读取或发送这个视频，请换一个更小的视频重试。");
+    }
   };
 
   const sendSticker = async (src: string, label: string) => {
@@ -377,6 +425,8 @@ export function useTwoOnlyChat() {
     return {
       roomId: room.roomId,
       lastOpenedAt: room.lastOpenedAt,
+      title: room.title ?? `双人聊天 · ${room.roomId.slice(0, 5)}`,
+      icon: room.icon ?? "2",
       connection: snapshot?.connection ?? "waiting",
       preview: messagePreview(snapshot?.messages.at(-1), snapshot?.connectionMode ?? "正在建立连接"),
     };
@@ -384,7 +434,35 @@ export function useTwoOnlyChat() {
 
   const updateProfile = (nextProfile: ChatProfile) => {
     setProfile(nextProfile);
-    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
+    window.localStorage.removeItem(LEGACY_PROFILE_KEY);
+    void saveLocalProfile(nextProfile)
+      .catch(() => setActiveNotice("无法把头像和昵称保存到这台设备。"));
+  };
+
+  const moveStoredRoom = (sourceRoomId: string, targetRoomId: string) => {
+    const sourceIndex = storedRooms.findIndex((room) => room.roomId === sourceRoomId);
+    const targetIndex = storedRooms.findIndex((room) => room.roomId === targetRoomId);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
+    const nextRooms = [...storedRooms];
+    const [sourceRoom] = nextRooms.splice(sourceIndex, 1);
+    nextRooms.splice(targetIndex, 0, sourceRoom);
+    const orderedRooms = nextRooms.map((room, order) => ({ ...room, order }));
+    setStoredRooms(orderedRooms);
+    void persistStoredRoomOrder(orderedRooms)
+      .catch(() => setActiveNotice("无法保存聊天顺序，请检查本机存储权限。"));
+  };
+
+  const updateStoredRoom = (roomId: string, patch: { title: string; icon: string }) => {
+    const normalizedPatch = {
+      title: patch.title.trim(),
+      icon: patch.icon,
+    };
+    setStoredRooms((current) => current.map((room) => room.roomId === roomId
+      ? { ...room, ...normalizedPatch }
+      : room));
+    void updateStoredRoomMetadata(roomId, normalizedPatch)
+      .then((room) => setStoredRooms((current) => replaceStoredRoom(current, room)))
+      .catch(() => setRoomNotice(roomId, "无法保存这个聊天的名称或图标。"));
   };
 
   return {
@@ -409,8 +487,11 @@ export function useTwoOnlyChat() {
     createRoom,
     createFreshRoom,
     openStoredRoom,
+    moveStoredRoom,
+    updateStoredRoom,
     submitText,
     chooseImage,
+    chooseVideo,
     sendSticker,
     startRecording,
     stopRecording,

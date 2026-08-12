@@ -1,6 +1,6 @@
 export type ConnectionState = "waiting" | "connecting" | "connected" | "disconnected";
 
-export type MessageKind = "text" | "image" | "audio";
+export type MessageKind = "text" | "image" | "audio" | "video";
 
 export type MessageAuthor = "self" | "peer";
 
@@ -28,6 +28,8 @@ export type EncryptedWire = {
 export type ConversationSummary = {
   roomId: string;
   lastOpenedAt: number;
+  title: string;
+  icon: string;
   connection: ConnectionState;
   preview: string;
 };
