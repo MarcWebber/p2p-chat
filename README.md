@@ -4,6 +4,20 @@
 
 只允许两位参与者进入的双人加密聊天 MVP。两端使用同一条邀请链接，以完全对等的方式完成 WebRTC 协商；文字、图片和语音先在浏览器内使用 AES-GCM 加密，再通过 DataChannel 传输，房间凭证、个人头像和密文历史保存在各自设备的 IndexedDB。
 
+## 架构图速览
+
+以下图片均为随仓库保存的 `1672 × 941` PNG；点击任意图片可查看原图。架构细节见[系统架构与文件结构](docs/architecture.md)，连接与 TURN 排障说明见[常见问题与网络排障 FAQ](docs/faq.md)。
+
+### 系统架构总览
+
+[![TwoOnly 系统架构总览](docs/assets/twoonly-architecture-overview.png)](docs/assets/twoonly-architecture-overview.png)
+
+### 建连与排障
+
+| 连接故障定位 | 双方对等建连 | TURN 可用性证据 |
+| --- | --- | --- |
+| [![连接失败：从哪里开始查](docs/assets/faq-01-connection-troubleshooting.png)](docs/assets/faq-01-connection-troubleshooting.png) | [![双方对等建连：正常时序](docs/assets/faq-02-peer-connection-sequence.png)](docs/assets/faq-02-peer-connection-sequence.png) | [![TURN 可用性的五级证据](docs/assets/faq-03-turn-evidence-levels.png)](docs/assets/faq-03-turn-evidence-levels.png) |
+
 完整技术文档：
 
 - [文档入口](docs/README.md)
