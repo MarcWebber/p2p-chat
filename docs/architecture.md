@@ -69,11 +69,11 @@ Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时
 | `src/diagnostics` | 建连日志、脱敏、内存环形缓冲和 Console 输出 | 持久化日志、记录密钥或消息内容 |
 | `src/signal` | 信令校验、Supabase/HTTPS 适配、双发去重和短时 Redis Stream | 聊天正文、PeerConnection 生命周期 |
 | `src/server` | Route Handler 共用的同源请求校验 | 浏览器状态、房间密钥 |
-| `src/webrtc` | Offer/Answer、ICE、DataChannel、重连和 ICE Server 规范化 | React UI、本地历史 |
+| `src/webrtc` | Offer/Answer、ICE、DataChannel、发送背压、重连和 ICE Server 规范化 | React UI、本地历史 |
 | `src/storage` | IndexedDB 房间目录、密文历史与本机消息方向 | 加解密、Supabase Database/Storage |
 | `src/room` | 无角色邀请链接的解析与生成 | 连接状态机 |
 | `src/media` | 录音生命周期 | 消息加密、通用浏览器文件转换 |
-| `src/protocol` | 密文信封的分片编码、重组和协议格式 | 网络连接、明文消息 |
+| `src/protocol` | 密文信封分片、附件分块、重组和协议格式 | 网络连接、React 状态 |
 | `src/ui` | 首页、聊天页和展示组件 | 直接访问 Supabase、WebRTC 或浏览器存储 |
 | `src/utils` | 剪贴板、Data URL、时间/容量格式、短 ID 和通用类型守卫 | 领域状态、网络策略、服务端秘密 |
 
@@ -160,6 +160,7 @@ twoonly/
 │   │   ├── publicRuntime.ts       # NEXT_PUBLIC 环境配置
 │   │   └── serverRuntime.ts       # server-only 站点、TURN 与 Redis 配置
 │   ├── chat/
+│   │   ├── roomRuntime.ts          # 单房间连接、消息与附件传输运行时
 │   │   ├── types.ts                # 聊天领域类型
 │   │   └── useTwoOnlyChat.ts       # 状态与用例协调器
 │   ├── crypto/
@@ -170,6 +171,7 @@ twoonly/
 │   ├── media/
 │   │   └── useAudioRecorder.ts     # 录音生命周期
 │   ├── protocol/
+│   │   ├── attachmentProtocol.ts   # 大附件分块、校验与 Base64 编解码
 │   │   └── wireProtocol.ts         # 密文分片编码与重组
 │   ├── room/
 │   │   └── invitation.ts           # 房间 URL 与邀请链接
@@ -191,7 +193,7 @@ twoonly/
 │   │   ├── ConnectionDiagnosticsPanel.tsx # 六阶段连接诊断面板
 │   │   ├── ChatSidebar.tsx         # 当前会话摘要
 │   │   ├── MessageList.tsx         # 消息展示
-│   │   └── MessageComposer.tsx     # 文字/图片/语音输入
+│   │   └── MessageComposer.tsx     # 文字/图片/语音/文件与剪贴板输入
 │   ├── utils/
 │   │   ├── browser.ts              # 剪贴板与 Data URL
 │   │   ├── format.ts               # 时间、容量与短 ID 格式

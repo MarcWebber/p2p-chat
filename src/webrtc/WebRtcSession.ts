@@ -1,5 +1,6 @@
 import type { ConnectionState, EncryptedWire } from "@/src/chat/types";
 import {
+  CHAT_POLICY,
   RESOURCE_NAMES,
   RTC_POLICY,
   SIGNAL_POLICY,
@@ -78,6 +79,7 @@ export class WebRtcSession {
   private signalWarningShown = false;
   private electionKey = "";
   private signalQueue = Promise.resolve();
+  private sendQueue = Promise.resolve();
 
   constructor(private readonly options: SessionOptions) {}
 
@@ -154,10 +156,9 @@ export class WebRtcSession {
   }
 
   send(wire: EncryptedWire) {
-    if (!this.channel || this.channel.readyState !== "open") return false;
-    const packets = encodeEncryptedWire(wire);
-    for (const packet of packets) this.channel.send(packet);
-    return true;
+    const result = this.sendQueue.then(() => this.sendNow(wire));
+    this.sendQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   dispose() {
@@ -285,6 +286,7 @@ export class WebRtcSession {
 
   private attachChannel(channel: RTCDataChannel) {
     this.channel = channel;
+    channel.bufferedAmountLowThreshold = CHAT_POLICY.dataChannelLowWaterMarkBytes;
     channel.onopen = () => {
       if (this.channel !== channel) return;
       this.trace("data", "data.open", "DataChannel 已打开，可以双向传输", { level: "success" });
@@ -318,6 +320,81 @@ export class WebRtcSession {
         this.options.onNotice("收到了一条格式不正确的传输数据。");
       }
     };
+  }
+
+  private async sendNow(wire: EncryptedWire) {
+    const channel = this.channel;
+    if (!channel || channel.readyState !== "open" || this.phase === "disposed") return false;
+    let packets: string[];
+    try {
+      packets = encodeEncryptedWire(wire);
+    } catch (error: unknown) {
+      this.trace("data", "data.send.invalid", "待发送密文超过协议限制", {
+        level: "error",
+        details: diagnosticErrorDetails(error),
+      });
+      return false;
+    }
+
+    try {
+      for (const packet of packets) {
+        if (
+          this.channel !== channel
+          || channel.readyState !== "open"
+        ) return false;
+        if (
+          channel.bufferedAmount > CHAT_POLICY.dataChannelHighWaterMarkBytes
+          && !await this.waitForWritableChannel(channel)
+        ) return false;
+        channel.send(packet);
+      }
+      return true;
+    } catch (error: unknown) {
+      this.trace("data", "data.send.failed", "DataChannel 发送密文失败", {
+        level: "error",
+        details: {
+          ...diagnosticErrorDetails(error),
+          readyState: channel.readyState,
+          bufferedAmount: channel.bufferedAmount,
+        },
+      });
+      return false;
+    }
+  }
+
+  private waitForWritableChannel(channel: RTCDataChannel) {
+    if (
+      this.channel !== channel
+      || channel.readyState !== "open"
+      || channel.bufferedAmount <= CHAT_POLICY.dataChannelLowWaterMarkBytes
+    ) return Promise.resolve(this.channel === channel && channel.readyState === "open");
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (writable: boolean) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        channel.removeEventListener("bufferedamountlow", handleLow);
+        channel.removeEventListener("close", handleClosed);
+        channel.removeEventListener("error", handleClosed);
+        resolve(writable);
+      };
+      const handleLow = () => finish(
+        this.channel === channel && channel.readyState === "open" && this.phase !== "disposed",
+      );
+      const handleClosed = () => finish(false);
+      const timeout = window.setTimeout(() => {
+        this.trace("data", "data.send.backpressure_timeout", "DataChannel 缓冲区长时间未排空", {
+          level: "error",
+          details: { bufferedAmount: channel.bufferedAmount },
+        });
+        finish(false);
+      }, CHAT_POLICY.dataChannelDrainTimeoutMs);
+      channel.addEventListener("bufferedamountlow", handleLow);
+      channel.addEventListener("close", handleClosed);
+      channel.addEventListener("error", handleClosed);
+    });
   }
 
   private markConnected() {
@@ -685,8 +762,10 @@ export class WebRtcSession {
 
   private closePeer() {
     const peer = this.peer;
+    const channel = this.channel;
     this.peer = null;
     this.channel = null;
+    channel?.close();
     peer?.close();
   }
 

@@ -166,7 +166,7 @@ ICE 选中的 UDP/TCP/TURN 路径
 
 WebRTC DataChannel 自带 DTLS 加密；MDN 也明确说明所有 DataChannel 数据必须受到 DTLS 保护：[Using WebRTC data channels](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Using_data_channels)。TwoOnly 仍然再做一层 AES-GCM，这是产品安全边界的选择，而不是因为 WebRTC “裸奔”。
 
-DataChannel 不是无限大的管道。大消息会带来缓冲和队头阻塞风险，因此项目把图片和录音限制在 1.5 MB，并把加密后的 JSON 切成 12,000 字符一片。下一版若继续做，最值得补的是 `bufferedAmountLowThreshold` 背压，而不是继续盲目提高文件上限。
+DataChannel 不是无限大的管道。常规消息的加密 JSON 会切成 12,000 字符一片；大图片和 Beta 文件先按 192 KB 独立加密，再继续切成 DataChannel 小包。发送缓冲超过高水位后，代码会等待 `bufferedamountlow` 回到低水位，避免把 100 MB 内容一次灌入浏览器队列。
 
 ## 一条消息在项目里经历了什么
 
@@ -190,7 +190,7 @@ sequenceDiagram
   R->>R: 渲染明文
 ```
 
-文字、图片和语音最后都变成同一种 `ChatMessage`。图片由 `FileReader` 转成 Data URL；语音由 `MediaRecorder` 录制后转成 Data URL。这样协议层简单，但 Base64 会增大体积，也是 MVP 为开发速度付出的成本。
+文字、语音和 1.5 MB 以内附件最后都变成同一种 `ChatMessage`；图片/小文件由 `FileReader` 转成 Data URL，语音由 `MediaRecorder` 录制后转成 Data URL。更大的图片和 Beta 文件使用独立的 `attachment-start / attachment-chunk` 协议，接收完成后生成当前页面有效的 `Blob URL`。这样既保留原有本机历史，也把 100 MB 传输的峰值内存限制在附件本身附近。
 
 ### 会话秘密放在哪里
 

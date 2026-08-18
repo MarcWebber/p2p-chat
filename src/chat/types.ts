@@ -1,6 +1,8 @@
 export type ConnectionState = "waiting" | "connecting" | "connected" | "disconnected";
 
-export type MessageKind = "text" | "image" | "audio";
+export type MessageKind = "text" | "image" | "audio" | "file";
+
+export type AttachmentMessageKind = Extract<MessageKind, "image" | "file">;
 
 export type MessageAuthor = "self" | "peer";
 
@@ -16,6 +18,11 @@ export type ChatMessage = {
   author: MessageAuthor;
   createdAt: number;
   fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  transferState?: "sending" | "receiving" | "ready" | "failed";
+  transferProgress?: number;
+  transient?: boolean;
   profile?: ChatProfile;
 };
 

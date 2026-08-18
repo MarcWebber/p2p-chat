@@ -188,14 +188,15 @@ npm run build
 1. 创建房间并复制完整邀请链接；
 2. 第二个浏览器/设备加入，双方显示直连或 TURN；
 3. 双向文字消息；
-4. 1.5 MB 内图片与录音；
-5. 刷新后从本地密文恢复；
-6. 已连接的两个页面都保持 peer lock，第三个页面收到 `rejected(room-full)`；
-7. 新建会话后旧身份锁、消息和连接状态被清理；
-8. 清空历史只影响当前设备；
-9. 浏览器 Console 无错误；
-10. `/api/signal` 显示 `configured:true`，Vercel Function 与 Redis 无异常日志。
-11. 分别阻断 Supabase 和 `/api/signal`，确认任意一条信令仍能完成握手。
+4. 1.5 MB 内图片与录音，以及一张超过 1.5 MB 的流式图片；
+5. 文本复制/粘贴、剪贴板图片粘贴，以及带 Beta 标识的文件传输；
+6. 刷新后从本地密文恢复常规消息，并确认大附件明确标记为仅当前页面；
+7. 已连接的两个页面都保持 peer lock，第三个页面收到 `rejected(room-full)`；
+8. 新建会话后旧身份锁、消息和连接状态被清理；
+9. 清空历史只影响当前设备；
+10. 浏览器 Console 无错误；
+11. `/api/signal` 显示 `configured:true`，Vercel Function 与 Redis 无异常日志。
+12. 分别阻断 Supabase 和 `/api/signal`，确认任意一条信令仍能完成握手。
 
 ## 9. 依赖与变更注意事项
 

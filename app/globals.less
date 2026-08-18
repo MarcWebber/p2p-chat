@@ -540,6 +540,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
 .message-content { min-width: 0; }
 .message-meta { margin: 0 3px 5px; display: flex; gap: 7px; color: #9ba3ac; font-size: 9px; }
 .message-row.mine .message-meta { justify-content: flex-end; }
+.message-meta button {
+  padding: 0;
+  border: 0;
+  color: #8f99a3;
+  background: transparent;
+  cursor: pointer;
+  font-size: 9px;
+
+  &:hover { color: @blue-dark; }
+}
 .message-bubble {
   padding: 10px 13px;
   border: 1px solid #e9ebee;
@@ -553,11 +563,38 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
   color: white;
   background: @blue;
 }
-.message-bubble p { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.6; }
+.message-bubble p { margin: 0; white-space: pre-wrap; word-break: break-word; user-select: text; cursor: text; font-size: 13px; line-height: 1.6; }
 .message-bubble.image { padding: 4px; overflow: hidden; }
 .message-bubble img { max-width: min(360px, 100%); max-height: 330px; display: block; border-radius: 8px; object-fit: cover; }
 .message-bubble.audio { padding: 7px 10px; }
 .message-bubble audio { width: min(290px, 54vw); height: 34px; display: block; }
+.message-bubble.file { min-width: min(310px, 58vw); padding: 9px 10px; }
+.file-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 9px; }
+.file-symbol {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #607181;
+  background: #edf1f4;
+  font-size: 8px;
+  font-weight: 800;
+}
+.file-details { min-width: 0; display: grid; gap: 3px; }
+.file-details strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.file-details small { color: #8a96a1; font-size: 9px; }
+.file-details i { color: #a36c15; font-style: normal; font-weight: 700; }
+.file-card a { padding: 5px 7px; border-radius: 6px; color: @blue-dark; background: @blue-soft; font-size: 9px; text-decoration: none; }
+.message-row.mine .file-symbol { color: @blue-dark; background: white; }
+.message-row.mine .file-details small { color: rgba(255, 255, 255, 0.76); }
+.message-row.mine .file-details i { color: #fff0bc; }
+.message-row.mine .file-card a { color: @blue-dark; background: white; }
+.attachment-status { margin-top: 6px; color: #7f8b96; font-size: 9px; text-align: center; }
+.message-row.mine .attachment-status { color: rgba(255, 255, 255, 0.8); }
+.attachment-status.failed { color: #d95b5b; }
+.message-row.mine .attachment-status.failed { color: #ffe0e0; }
+.attachment-status.transient { opacity: 0.78; }
 
 .dialog-backdrop {
   position: fixed;
@@ -692,6 +729,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
   input { display: none; }
 }
 .tool-label { font-size: 10px; }
+.beta-badge {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 1px 4px;
+  border-radius: 5px;
+  color: #94620f;
+  background: #fff0bd;
+  font-size: 7px;
+  font-weight: 800;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
 .message-input {
   min-width: 0;
   padding: 7px 4px;

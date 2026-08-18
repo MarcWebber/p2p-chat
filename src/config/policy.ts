@@ -6,9 +6,19 @@ export const ROOM_POLICY = {
 } as const;
 
 export const CHAT_POLICY = {
-  maxAttachmentBytes: 1_500_000,
+  maxImageBytes: 100_000_000,
+  maxFileBytes: 100_000_000,
+  maxInlineAttachmentBytes: 1_500_000,
+  maxAudioBytes: 1_500_000,
+  maxStickerBytes: 1_500_000,
   maxAvatarSourceBytes: 12_000_000,
+  attachmentChunkBytes: 192_000,
   encryptedChunkCharacters: 12_000,
+  maxEncryptedWireCharacters: 4_000_000,
+  maxConcurrentWireAssemblies: 8,
+  dataChannelHighWaterMarkBytes: 4_000_000,
+  dataChannelLowWaterMarkBytes: 1_000_000,
+  dataChannelDrainTimeoutMs: 120_000,
 } as const;
 
 export const DIAGNOSTICS_POLICY = {

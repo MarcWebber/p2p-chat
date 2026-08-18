@@ -24,5 +24,13 @@ export function createMessageCrypto(secret: string) {
     async decrypt(wire: EncryptedWire): Promise<ChatMessage> {
       return await cipher.decrypt(wire) as ChatMessage;
     },
+
+    async encryptPayload(id: string, payload: unknown): Promise<EncryptedWire> {
+      return { id, ...await cipher.encrypt(payload) };
+    },
+
+    async decryptPayload(wire: EncryptedWire): Promise<unknown> {
+      return await cipher.decrypt(wire);
+    },
   };
 }

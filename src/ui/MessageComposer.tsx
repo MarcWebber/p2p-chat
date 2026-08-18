@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type ChangeEventHandler,
+  type ClipboardEvent,
   type FormEventHandler,
   type KeyboardEvent,
 } from "react";
@@ -19,6 +20,8 @@ type MessageComposerProps = {
   onDraftChange: (draft: string) => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
   onChooseImage: ChangeEventHandler<HTMLInputElement>;
+  onChooseFile: ChangeEventHandler<HTMLInputElement>;
+  onPasteFile: (file: File) => Promise<void>;
   onSendSticker: (src: string, label: string) => Promise<boolean>;
   onStartRecording: () => void;
   onStopRecording: () => void;
@@ -31,6 +34,8 @@ export function MessageComposer({
   onDraftChange,
   onSubmit,
   onChooseImage,
+  onChooseFile,
+  onPasteFile,
   onSendSticker,
   onStartRecording,
   onStopRecording,
@@ -68,6 +73,16 @@ export function MessageComposer({
     onSubmit(event);
   };
 
+  const handlePaste = (event: ClipboardEvent<HTMLInputElement>) => {
+    const clipboardFile = Array.from(event.clipboardData.items)
+      .find((item) => item.kind === "file")
+      ?.getAsFile() ?? event.clipboardData.files[0];
+    if (!clipboardFile) return;
+    event.preventDefault();
+    setPickerOpen(false);
+    void onPasteFile(clipboardFile);
+  };
+
   return (
     <>
       <form className="composer" onSubmit={handleSubmit}>
@@ -94,6 +109,10 @@ export function MessageComposer({
             <span aria-hidden>▧</span><span className="tool-label">图片</span>
             <input type="file" accept="image/*" onChange={onChooseImage} disabled={!connected} />
           </label>
+          <label className={`tool-button ${connected ? "" : "disabled"}`} title="发送文件（Beta）">
+            <span aria-hidden>⇧</span><span className="tool-label">文件 <span className="beta-badge">Beta</span></span>
+            <input type="file" onChange={onChooseFile} disabled={!connected} />
+          </label>
           <button
             type="button"
             className={`tool-button record ${isRecording ? "recording" : ""}`}
@@ -111,6 +130,7 @@ export function MessageComposer({
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleInputKeyDown}
+          onPaste={handlePaste}
           placeholder={connected ? "输入消息" : "连接后即可发送"}
           aria-label="消息内容"
           disabled={!connected}
@@ -119,7 +139,7 @@ export function MessageComposer({
       </form>
       <p className="composer-hint">
         {connected
-          ? `支持表情、颜文字和图片表情包 · 图片/语音上限 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)}`
+          ? `支持文本复制粘贴和剪贴板图片/文件 · 图片 ${formatBytes(CHAT_POLICY.maxImageBytes)} · 文件 Beta ${formatBytes(CHAT_POLICY.maxFileBytes)} · 语音 ${formatBytes(CHAT_POLICY.maxAudioBytes)}`
           : "等待安全连接建立后即可发送"}
       </p>
     </>

@@ -7,7 +7,7 @@ import "./globals.generated.css";
 export const metadata: Metadata = {
   metadataBase: new URL(SERVER_RUNTIME_CONFIG.siteUrl),
   title: "TwoOnly · 双人加密聊天",
-  description: "只允许两个人加入，支持文字、图片和语音的加密聊天。",
+  description: "只允许两个人加入，支持文字、图片、语音和 Beta 文件传输的加密聊天。",
   openGraph: {
     title: "TwoOnly · 双人加密聊天",
     description: "只允许两个人加入的加密聊天。",

@@ -6,7 +6,7 @@ import { formatBytes } from "@/src/utils/format";
 
 type AudioRecorderOptions = {
   sessionKey: string;
-  onAudio: (content: string) => void | Promise<void>;
+  onAudio: (content: string, metadata: { fileSize: number; mimeType: string }) => void | Promise<void>;
   onNotice: (notice: string) => void;
 };
 
@@ -65,11 +65,14 @@ export function useAudioRecorder({ sessionKey, onAudio, onNotice }: AudioRecorde
         if (streamRef.current === stream) streamRef.current = null;
         setIsRecording(false);
         if (startedInSession !== sessionKeyRef.current) return;
-        if (blob.size > CHAT_POLICY.maxAttachmentBytes) {
-          onNoticeRef.current(`录音超过当前 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)} 限制，请录制更短的语音。`);
+        if (blob.size > CHAT_POLICY.maxAudioBytes) {
+          onNoticeRef.current(`录音超过当前 ${formatBytes(CHAT_POLICY.maxAudioBytes)} 限制，请录制更短的语音。`);
           return;
         }
-        if (blob.size) await onAudioRef.current(await readAsDataUrl(blob));
+        if (blob.size) await onAudioRef.current(await readAsDataUrl(blob), {
+          fileSize: blob.size,
+          mimeType: blob.type || "audio/webm",
+        });
       };
       recorder.start();
       setIsRecording(true);

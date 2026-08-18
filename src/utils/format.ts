@@ -12,6 +12,11 @@ export const formatSecondTime = timeFormatter({ second: "2-digit" });
 export const formatMillisecondTime = timeFormatter({ second: "2-digit", fractionalSecondDigits: 3 });
 
 export function formatBytes(bytes: number) {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) {
+    const kilobytes = bytes / 1_000;
+    return `${kilobytes >= 100 ? Math.round(kilobytes) : kilobytes.toFixed(1)} KB`;
+  }
   const megabytes = bytes / 1_000_000;
   return `${Number.isInteger(megabytes) ? megabytes : megabytes.toFixed(1)} MB`;
 }

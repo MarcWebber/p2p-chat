@@ -43,7 +43,9 @@ function createUniqueRoomInvitation(rooms: StoredRoom[]) {
 function messagePreview(message: ChatMessage | undefined, connectionMode: string) {
   if (!message) return connectionMode;
   if (message.kind === "text") return message.content;
-  return message.kind === "audio" ? "[语音消息]" : "[图片]";
+  if (message.kind === "audio") return "[语音消息]";
+  if (message.kind === "file") return `[文件 · ${message.fileName ?? "未命名"}]`;
+  return "[图片]";
 }
 
 export function useTwoOnlyChat() {
@@ -70,15 +72,23 @@ export function useTwoOnlyChat() {
 
   const setActiveNotice = (notice: string) => setRoomNotice(activeRoomIdRef.current, notice);
 
-  const sendMessage = async (kind: MessageKind, content: string, fileName?: string) => {
+  const sendMessage = async (
+    kind: MessageKind,
+    content: string,
+    options?: { fileName?: string; fileSize?: number; mimeType?: string },
+  ) => {
     const runtime = runtimesRef.current.get(activeRoomIdRef.current);
     if (!runtime) return;
-    await runtime.send(kind, content, profile, fileName);
+    await runtime.send(kind, content, profile, options);
   };
 
   const { isRecording, startRecording, stopRecording, cancelRecording } = useAudioRecorder({
     sessionKey: activeRoomId ?? "",
-    onAudio: (content) => sendMessage("audio", content, "语音消息"),
+    onAudio: (content, metadata) => sendMessage("audio", content, {
+      fileName: "语音消息",
+      fileSize: metadata.fileSize,
+      mimeType: metadata.mimeType,
+    }),
     onNotice: setActiveNotice,
   });
 
@@ -332,20 +342,48 @@ export function useTwoOnlyChat() {
     void sendMessage("text", content);
   };
 
-  const chooseImage = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (file.size > CHAT_POLICY.maxAttachmentBytes) {
-      setActiveNotice(`为了保证点对点传输稳定，当前版本仅支持 ${formatBytes(CHAT_POLICY.maxAttachmentBytes)} 以内的图片。`);
-      return;
+  const sendAttachmentFile = async (kind: "image" | "file", file: File) => {
+    const maxBytes = kind === "image" ? CHAT_POLICY.maxImageBytes : CHAT_POLICY.maxFileBytes;
+    if (file.size > maxBytes) {
+      setActiveNotice(`${kind === "image" ? "图片" : "Beta 文件"}最大支持 ${formatBytes(maxBytes)}。`);
+      return false;
     }
     const targetRoomId = activeRoomIdRef.current;
     const runtime = runtimesRef.current.get(targetRoomId);
-    if (!runtime) return;
-    const content = await readAsDataUrl(file);
-    if (activeRoomIdRef.current !== targetRoomId || runtimesRef.current.get(targetRoomId) !== runtime) return;
-    await runtime.send("image", content, profile, file.name);
+    if (!runtime) return false;
+    try {
+      if (file.size > CHAT_POLICY.maxInlineAttachmentBytes) {
+        setRoomNotice(targetRoomId, `正在分片加密并发送${kind === "image" ? "大图片" : " Beta 文件"}…`);
+        return await runtime.sendAttachment(kind, file, profile);
+      }
+      const content = await readAsDataUrl(file);
+      if (runtimesRef.current.get(targetRoomId) !== runtime) return false;
+      return await runtime.send(kind, content, profile, {
+        fileName: file.name || (kind === "image" ? "图片" : "未命名文件"),
+        fileSize: file.size,
+        mimeType: file.type || "application/octet-stream",
+      });
+    } catch {
+      setRoomNotice(targetRoomId, `${kind === "image" ? "图片" : "Beta 文件"}读取失败，请重新选择。`);
+      return false;
+    }
+  };
+
+  const chooseImage = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) await sendAttachmentFile("image", file);
+  };
+
+  const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) await sendAttachmentFile("file", file);
+  };
+
+  const pasteFile = async (file: File) => {
+    const kind = file.type.startsWith("image/") ? "image" : "file";
+    await sendAttachmentFile(kind, file);
   };
 
   const sendSticker = async (src: string, label: string) => {
@@ -356,13 +394,17 @@ export function useTwoOnlyChat() {
       const response = await fetch(src);
       if (!response.ok) throw new Error(`sticker ${response.status}`);
       const blob = await response.blob();
-      if (blob.size > CHAT_POLICY.maxAttachmentBytes) {
+      if (blob.size > CHAT_POLICY.maxStickerBytes) {
         setActiveNotice("这个表情包文件过大，无法发送。");
         return false;
       }
       const content = await readAsDataUrl(blob);
       if (activeRoomIdRef.current !== targetRoomId || runtimesRef.current.get(targetRoomId) !== runtime) return false;
-      await runtime.send("image", content, profile, `${label}.png`);
+      await runtime.send("image", content, profile, {
+        fileName: `${label}.png`,
+        fileSize: blob.size,
+        mimeType: blob.type || "image/png",
+      });
       return true;
     } catch {
       setActiveNotice("表情包加载失败，请重试。");
@@ -466,6 +508,8 @@ export function useTwoOnlyChat() {
     updateStoredRoom,
     submitText,
     chooseImage,
+    chooseFile,
+    pasteFile,
     sendSticker,
     startRecording,
     stopRecording,

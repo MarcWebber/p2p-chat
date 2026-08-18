@@ -108,31 +108,34 @@ AES-GCM 同时提供机密性和完整性校验；篡改 IV 或密文会导致 `
 
 当前没有把房间号、作者或协议版本放入 Additional Authenticated Data。若未来增加协议版本或可路由头部，应把这些不可加密但必须防篡改的字段加入 AAD。
 
-## 6. 消息、图片和语音
+## 6. 消息、图片、语音和 Beta 文件
 
 统一明文结构：
 
 ```ts
 type ChatMessage = {
   id: string;
-  kind: "text" | "image" | "audio";
+  kind: "text" | "image" | "audio" | "file";
   content: string;
   author: "self" | "peer";
   createdAt: number;
   fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
 };
 ```
 
 - 文字直接进入 `content`；
-- 图片通过 `FileReader.readAsDataURL` 转成 Data URL；
+- 1.5 MB 以内的图片和文件通过 `FileReader.readAsDataURL` 转成 Data URL，并沿用可恢复的密文历史；
 - 语音通过 `getUserMedia({audio:true})` 和 `MediaRecorder` 录制，优先使用 WebM/Opus，再转成 Data URL；
-- 图片和语音在编码前限制为 1.5 MB，避免浏览器内存、本地存储和 DataChannel 队列失控。
+- 图片最大 100 MB，语音最大 1.5 MB；Beta 文件最大 100 MB；
+- 超过 1.5 MB 的图片和文件按 192 KB 读取、独立 AES-GCM 加密和传输，不生成整份巨型 Data URL，也不写入 IndexedDB。
 
-消息 JSON 先整体加密，再把密文 JSON 按 12,000 字符切成 `ChunkPacket`。接收端按消息 ID 和序号重组，只有分片完整后才执行 AES-GCM 解密。
+常规消息 JSON 先整体加密，再把密文 JSON 按 12,000 字符切成 `ChunkPacket`。大附件先发送加密元数据，再逐块加密；每个加密块仍按 12,000 字符切包。接收端先按密文 ID 重组并认证每一块，全部到齐后才创建本页 `Blob URL`。
 
 `self / peer` 是本机 UI 方向，不是网络协议角色。方向元数据随密文记录保存在 IndexedDB；读取历史时直接使用这份本机方向，不从 URL 或旧存储猜测。
 
-当前未实现发送背压；持续发送多个大文件可能增大 `RTCDataChannel.bufferedAmount`。正式版应设置 `bufferedAmountLowThreshold` 并等待 `bufferedamountlow`。
+发送端把 `bufferedAmountLowThreshold` 设为低水位；缓存超过高水位后等待 `bufferedamountlow`，超时或断线即把附件标记为传输中断。当前仍未实现断点续传，因此 Beta 文件需要双方持续在线。
 
 ## 7. 本地加密历史
 
@@ -143,7 +146,7 @@ rooms      完整房间凭证与最近活动时间
 messages   按 roomId 保存 EncryptedWire 和本机方向
 ```
 
-消息正文仍只保存 `EncryptedWire`，不保存明文 `ChatMessage`，每个房间保留最新 200 条。重新打开首页时可从 `rooms` 自动恢复最近会话；清空记录只删除当前设备、当前房间对应的 `messages`。
+常规消息正文仍只保存 `EncryptedWire`，不保存明文 `ChatMessage`，每个房间保留最新 200 条。超过 1.5 MB 的流式附件不写入 IndexedDB，刷新后不会恢复。重新打开首页时可从 `rooms` 自动恢复最近会话；清空记录只删除当前设备、当前房间对应的 `messages`。
 
 注意：
 
