@@ -9,7 +9,7 @@
 
 * { box-sizing: border-box; }
 
-html, body { min-height: 100%; margin: 0; }
+html, body { min-height: 100%; margin: 0; overflow-x: hidden; }
 
 body {
   color: @ink;
@@ -18,9 +18,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible, label:focus-within {
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, label:focus-within {
   outline: 2px solid rgba(22, 140, 255, 0.42);
   outline-offset: 2px;
 }
@@ -156,6 +156,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
 
 /* Chat app */
 .chat-shell {
+  width: 100%;
+  max-width: 100vw;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 64px 270px minmax(0, 1fr);
@@ -274,6 +276,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
   position: relative;
   min-width: 0;
   height: 100vh;
+  overflow: hidden;
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr) auto auto;
   background: @chat-bg;
@@ -416,6 +419,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
 
 .message-list {
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 26px clamp(24px, 6vw, 78px);
   scrollbar-width: thin;
@@ -516,6 +520,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
 .diagnostics-log .empty { display: block; padding: 14px; color: #9aa3ac; text-align: center; }
 
 .message-row {
+  width: fit-content;
   max-width: min(72%, 720px);
   margin: 0 0 20px;
   display: flex;
@@ -537,8 +542,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
   font-weight: 700;
 }
 .message-row.theirs .message-avatar { color: #5a6470; background: #d9e2ee; }
-.message-content { min-width: 0; }
-.message-meta { margin: 0 3px 5px; display: flex; gap: 7px; color: #9ba3ac; font-size: 9px; }
+.message-content { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
+.message-row.mine .message-content { align-items: flex-end; }
+.message-meta { margin: 0 3px 5px; display: flex; gap: 7px; color: #9ba3ac; font-size: 9px; white-space: nowrap; }
 .message-row.mine .message-meta { justify-content: flex-end; }
 .message-meta button {
   padding: 0;
@@ -549,8 +555,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
   font-size: 9px;
 
   &:hover { color: @blue-dark; }
+  &:disabled { cursor: default; opacity: 0.45; }
 }
+.message-meta .message-delete-button:hover:not(:disabled) { color: #d45353; }
 .message-bubble {
+  width: fit-content;
+  max-width: 100%;
   padding: 10px 13px;
   border: 1px solid #e9ebee;
   border-radius: 4px 12px 12px 12px;
@@ -654,6 +664,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
   font-size: 11px;
 }
 .secondary-dialog-button { border: 1px solid #dce3ea; color: #697580; background: white; }
+.danger-dialog-button { margin-right: auto; border: 1px solid #f0caca; color: #c54d4d; background: #fff8f8; }
+.danger-dialog-button:hover { border-color: #e6a9a9; background: #fff1f1; }
 .primary-dialog-button { border: 1px solid @blue; color: white; background: @blue; }
 .primary-dialog-button:disabled { cursor: default; opacity: 0.45; }
 .crop-viewport {
@@ -697,13 +709,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
 
 .composer {
   position: relative;
-  min-height: 108px;
+  min-height: 122px;
   margin: 0;
   padding: 10px 18px 12px;
   display: grid;
   grid-template-columns: 1fr auto;
-  grid-template-rows: 30px 1fr;
+  grid-template-rows: auto auto;
   column-gap: 10px;
+  row-gap: 8px;
   border-top: 1px solid @line;
   background: white;
 }
@@ -742,16 +755,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:focus-wit
   text-transform: uppercase;
 }
 .message-input {
+  width: 100%;
   min-width: 0;
-  padding: 7px 4px;
+  min-height: 44px;
+  max-height: min(240px, 35dvh);
+  padding: 8px 9px;
+  resize: vertical;
+  overflow-y: auto;
   border: 0;
+  border-radius: 7px;
   outline: 0;
   color: @ink;
-  background: transparent;
+  background: #f8fafc;
   font-size: 13px;
+  line-height: 1.5;
 
   &::placeholder { color: #a8afb7; }
   &:disabled { cursor: default; }
+  &:focus { background: #f4f8fc; box-shadow: inset 0 0 0 1px #cfe4f8; }
 }
 .send-button {
   align-self: end;

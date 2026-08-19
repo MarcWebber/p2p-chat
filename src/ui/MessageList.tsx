@@ -12,6 +12,7 @@ type MessageListProps = {
   copied: boolean;
   onCopyInvite: () => void;
   onReconnect: () => void;
+  onDeleteMessage: (messageId: string) => void;
 };
 
 function safeAttachmentSource(message: ChatMessage) {
@@ -29,6 +30,7 @@ export function MessageList({
   copied,
   onCopyInvite,
   onReconnect,
+  onDeleteMessage,
 }: MessageListProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const copyTimerRef = useRef<number | undefined>(undefined);
@@ -90,6 +92,14 @@ export function MessageList({
                     {copiedMessageId === message.id ? "已复制" : "复制"}
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  className="message-delete-button"
+                  onClick={() => onDeleteMessage(message.id)}
+                  disabled={transferActive}
+                  title={transferActive ? "附件传输完成或中断后才能删除" : "仅从本机删除"}
+                  aria-label={`删除${mine ? "自己" : "对方"}的这条消息`}
+                >删除</button>
               </div>
               <div className={`message-bubble ${message.kind}`}>
                 {message.kind === "text" ? <p>{message.content}</p> : null}

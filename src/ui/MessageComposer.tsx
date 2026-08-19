@@ -42,7 +42,7 @@ export function MessageComposer({
 }: MessageComposerProps) {
   const connected = connection === "connected";
   const [pickerOpen, setPickerOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!connected) setPickerOpen(false);
@@ -59,12 +59,19 @@ export function MessageComposer({
     });
   };
 
-  const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === "Space") {
       event.preventDefault();
       setPickerOpen((current) => !current);
     } else if (event.key === "Escape" && pickerOpen) {
       setPickerOpen(false);
+    } else if (
+      event.key === "Enter"
+      && !event.shiftKey
+      && !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
     }
   };
 
@@ -73,7 +80,7 @@ export function MessageComposer({
     onSubmit(event);
   };
 
-  const handlePaste = (event: ClipboardEvent<HTMLInputElement>) => {
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const clipboardFile = Array.from(event.clipboardData.items)
       .find((item) => item.kind === "file")
       ?.getAsFile() ?? event.clipboardData.files[0];
@@ -124,9 +131,10 @@ export function MessageComposer({
             <span className="tool-label">{isRecording ? "发送" : "语音"}</span>
           </button>
         </div>
-        <input
+        <textarea
           ref={inputRef}
           className="message-input"
+          rows={2}
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleInputKeyDown}
@@ -139,7 +147,7 @@ export function MessageComposer({
       </form>
       <p className="composer-hint">
         {connected
-          ? `支持文本复制粘贴和剪贴板图片/文件 · 图片 ${formatBytes(CHAT_POLICY.maxImageBytes)} · 文件 Beta ${formatBytes(CHAT_POLICY.maxFileBytes)} · 语音 ${formatBytes(CHAT_POLICY.maxAudioBytes)}`
+          ? `Enter 发送 · Shift + Enter 换行 · 可拖动输入框下边缘调整高度 · 图片 ${formatBytes(CHAT_POLICY.maxImageBytes)} · 文件 Beta ${formatBytes(CHAT_POLICY.maxFileBytes)}`
           : "等待安全连接建立后即可发送"}
       </p>
     </>

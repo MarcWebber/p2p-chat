@@ -47,6 +47,7 @@ export function ChatScreen(props: TwoOnlyChatController) {
           copied={props.copied}
           onCopyInvite={props.copyInvite}
           onReconnect={props.reconnect}
+          onDeleteMessage={props.deleteLocalMessage}
         />
         {props.notice ? (
           <div className="notice" role="status">
@@ -73,6 +74,9 @@ export function ChatScreen(props: TwoOnlyChatController) {
           key={editingRoom.roomId}
           room={editingRoom}
           onCancel={() => setEditingRoomId("")}
+          onDelete={(roomId) => {
+            if (props.deleteLocalRoom(roomId)) setEditingRoomId("");
+          }}
           onSave={(roomId, patch) => {
             props.updateStoredRoom(roomId, patch);
             setEditingRoomId("");

@@ -7,9 +7,10 @@ type RoomSettingsDialogProps = {
   room: ConversationSummary;
   onCancel: () => void;
   onSave: (roomId: string, patch: { title: string; icon: string }) => void;
+  onDelete: (roomId: string) => void;
 };
 
-export function RoomSettingsDialog({ room, onCancel, onSave }: RoomSettingsDialogProps) {
+export function RoomSettingsDialog({ room, onCancel, onSave, onDelete }: RoomSettingsDialogProps) {
   const [title, setTitle] = useState(room.title);
   const [icon, setIcon] = useState(room.icon);
 
@@ -30,7 +31,7 @@ export function RoomSettingsDialog({ room, onCancel, onSave }: RoomSettingsDialo
     >
       <form className="room-settings-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="room-settings-title">
         <div className="dialog-title-row">
-          <div><strong id="room-settings-title">聊天设置</strong><small>名称和图标只保存在本机</small></div>
+          <div><strong id="room-settings-title">聊天设置</strong><small>名称和图标在线时会端到端加密同步</small></div>
           <button type="button" onClick={onCancel} aria-label="关闭聊天设置">×</button>
         </div>
         <label className="room-title-field">
@@ -42,6 +43,11 @@ export function RoomSettingsDialog({ room, onCancel, onSave }: RoomSettingsDialo
           <AvatarUploader value={icon} fallback="2" title="裁切聊天图标" onChange={setIcon} />
         </div>
         <div className="dialog-actions">
+          <button
+            type="button"
+            className="danger-dialog-button"
+            onClick={() => onDelete(room.roomId)}
+          >删除聊天</button>
           <button type="button" className="secondary-dialog-button" onClick={onCancel}>取消</button>
           <button type="submit" className="primary-dialog-button">保存</button>
         </div>

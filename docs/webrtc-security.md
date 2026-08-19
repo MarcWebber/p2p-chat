@@ -139,20 +139,24 @@ type ChatMessage = {
 
 ## 7. 本地加密历史
 
-IndexedDB 使用两个 object store：
+IndexedDB 使用三个 object store：
 
 ```text
 rooms      完整房间凭证与最近活动时间
 messages   按 roomId 保存 EncryptedWire 和本机方向
+settings   本机昵称和头像
 ```
 
-常规消息正文仍只保存 `EncryptedWire`，不保存明文 `ChatMessage`，每个房间保留最新 200 条。超过 1.5 MB 的流式附件不写入 IndexedDB，刷新后不会恢复。重新打开首页时可从 `rooms` 自动恢复最近会话；清空记录只删除当前设备、当前房间对应的 `messages`。
+常规消息正文仍只保存 `EncryptedWire`，不保存明文 `ChatMessage`，每个房间保留最新 200 条。超过 1.5 MB 的流式附件不写入 IndexedDB，刷新后不会恢复。重新打开首页时可从 `rooms` 自动恢复最近会话；单条删除、清空记录和删除聊天都只修改当前设备。
+
+聊天名称和图标是例外：它们通过 DataChannel 发送 AES-GCM 加密的 `room-metadata` 控制消息，并在接收端写入自己的 `rooms`。每次本地修改递增逻辑版本；两个离线端同时修改时，以版本号和随机版本 ID 的确定性顺序选出一份，不做字段合并，也不保存修改历史。
 
 注意：
 
 - IndexedDB 不是抗取证或硬件安全存储；能控制当前浏览器环境的脚本、扩展或本机用户可能读取密文和页面内存中的密钥。
 - 清理浏览器数据、换设备或丢失完整邀请链接后，历史无法恢复。
 - 对方离线时，新消息只保存在发送方本机，不会自动补发。
+- 删除不发送 tombstone；因此一端删除后，另一端继续保留消息或整个聊天是预期行为。
 
 ## 8. 安全模型
 

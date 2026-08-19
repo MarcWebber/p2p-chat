@@ -11,6 +11,13 @@ export type ChatProfile = {
   avatar: string;
 };
 
+export type RoomMetadata = {
+  title?: string;
+  icon?: string;
+  revision: number;
+  versionId: string;
+};
+
 export type ChatMessage = {
   id: string;
   kind: MessageKind;

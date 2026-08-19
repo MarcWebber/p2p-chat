@@ -1,4 +1,13 @@
-import type { ChatProfile, EncryptedWire, MessageAuthor } from "@/src/chat/types";
+import type {
+  ChatProfile,
+  EncryptedWire,
+  MessageAuthor,
+  RoomMetadata,
+} from "@/src/chat/types";
+import {
+  compareRoomMetadataVersion,
+  normalizeRoomMetadata,
+} from "@/src/protocol/roomMetadataProtocol";
 import type { RoomInvitation } from "@/src/room/invitation";
 
 const DATABASE_NAME = "twoonly-chat";
@@ -16,9 +25,11 @@ export type StoredRoom = {
   order: number;
   title?: string;
   icon?: string;
+  metadataRevision: number;
+  metadataVersionId: string;
 };
 
-export type StoredRoomMetadata = Pick<StoredRoom, "title" | "icon">;
+export type StoredRoomMetadata = RoomMetadata;
 
 type StoredEncryptedMessage = {
   wire: EncryptedWire;
@@ -97,6 +108,7 @@ function parseStoredRoom(value: unknown): StoredRoom {
     || !room.secret
     || typeof room.lastOpenedAt !== "number"
   ) throw new Error("Invalid stored room");
+  const metadata = normalizeRoomMetadata(room);
   return {
     roomId: room.roomId,
     secret: room.secret,
@@ -104,8 +116,19 @@ function parseStoredRoom(value: unknown): StoredRoom {
     order: typeof room.order === "number" && Number.isFinite(room.order)
       ? room.order
       : Number.MAX_SAFE_INTEGER,
-    title: typeof room.title === "string" && room.title.trim() ? room.title.trim() : undefined,
-    icon: typeof room.icon === "string" && room.icon ? room.icon : undefined,
+    title: metadata.title,
+    icon: metadata.icon,
+    metadataRevision: metadata.revision,
+    metadataVersionId: metadata.versionId,
+  };
+}
+
+function roomMetadata(room: StoredRoom): RoomMetadata {
+  return {
+    title: room.title,
+    icon: room.icon,
+    revision: room.metadataRevision,
+    versionId: room.metadataVersionId,
   };
 }
 
@@ -176,6 +199,8 @@ export async function upsertStoredRoom(invitation: RoomInvitation) {
         secret: invitation.secret,
         lastOpenedAt: Date.now(),
         order: rooms.length,
+        metadataRevision: 0,
+        metadataVersionId: "",
       };
   const database = await openDatabase();
   const transaction = database.transaction(ROOM_STORE, "readwrite");
@@ -186,18 +211,25 @@ export async function upsertStoredRoom(invitation: RoomInvitation) {
 }
 
 export async function updateStoredRoomMetadata(roomId: string, patch: StoredRoomMetadata) {
-  const rooms = await listStoredRooms();
-  const current = rooms.find((room) => room.roomId === roomId);
-  if (!current) throw new Error("Stored room not found");
+  const database = await openDatabase();
+  const transaction = database.transaction(ROOM_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(ROOM_STORE);
+  const value = await requestResult(store.get(roomId));
+  if (value === undefined) throw new Error("Stored room not found");
+  const current = parseStoredRoom(value);
+  if (compareRoomMetadataVersion(patch, roomMetadata(current)) <= 0) {
+    await completed;
+    return current;
+  }
   const room: StoredRoom = {
     ...current,
     title: patch.title?.trim() || undefined,
     icon: patch.icon || undefined,
+    metadataRevision: patch.revision,
+    metadataVersionId: patch.versionId,
   };
-  const database = await openDatabase();
-  const transaction = database.transaction(ROOM_STORE, "readwrite");
-  const completed = transactionDone(transaction);
-  transaction.objectStore(ROOM_STORE).put(room);
+  store.put(room);
   await completed;
   return room;
 }
@@ -263,6 +295,27 @@ export async function clearEncryptedHistory(roomId: string) {
   const database = await openDatabase();
   const transaction = database.transaction(MESSAGE_STORE, "readwrite");
   const completed = transactionDone(transaction);
+  transaction.objectStore(MESSAGE_STORE).delete(roomId);
+  await completed;
+}
+
+export async function deleteEncryptedMessage(roomId: string, messageId: string) {
+  const database = await openDatabase();
+  const transaction = database.transaction(MESSAGE_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(MESSAGE_STORE);
+  const items = parseMessageBucket(await requestResult(store.get(roomId)), roomId)
+    .filter((item) => item.wire.id !== messageId);
+  if (items.length) store.put({ roomId, items } satisfies MessageBucket);
+  else store.delete(roomId);
+  await completed;
+}
+
+export async function deleteStoredRoom(roomId: string) {
+  const database = await openDatabase();
+  const transaction = database.transaction([ROOM_STORE, MESSAGE_STORE], "readwrite");
+  const completed = transactionDone(transaction);
+  transaction.objectStore(ROOM_STORE).delete(roomId);
   transaction.objectStore(MESSAGE_STORE).delete(roomId);
   await completed;
 }

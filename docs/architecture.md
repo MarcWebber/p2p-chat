@@ -140,6 +140,8 @@ https://站点/?room=<roomId>#<secret>
 
 聊天消息中的 `author` 使用 `self / peer`，只表达本机 UI 方向。方向元数据随密文写入 IndexedDB，刷新或关闭标签页后仍可恢复。存储层只读取当前 IndexedDB 结构；无效记录会明确失败，不再回退到旧存储或猜测消息方向。
 
+聊天名称和图标使用独立的 `room-metadata` 加密控制消息，不混入消息列表。每次修改生成递增 revision 和随机 version ID；双方同时修改同一 revision 时按 version ID 确定唯一胜者，连接建立后各自重发当前版本以完成收敛。消息删除和聊天删除则刻意保持本地语义，不广播 tombstone，也不承诺双方历史一致。
+
 ## 6. 文件结构
 
 ```text

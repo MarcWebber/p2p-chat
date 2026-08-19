@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { RoomRuntime, type RoomRuntimeSnapshot } from "@/src/chat/roomRuntime";
-import type { ChatMessage, ChatProfile, MessageKind } from "@/src/chat/types";
+import type {
+  ChatMessage,
+  ChatProfile,
+  MessageKind,
+  RoomMetadata,
+} from "@/src/chat/types";
 import { CHAT_POLICY, SIGNAL_POLICY, UI_POLICY } from "@/src/config/policy";
 import { createSafetyCode } from "@/src/crypto/messageCrypto";
 import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
@@ -13,6 +18,11 @@ import {
   type RoomInvitation,
 } from "@/src/room/invitation";
 import {
+  compareRoomMetadataVersion,
+  normalizeRoomMetadata,
+} from "@/src/protocol/roomMetadataProtocol";
+import {
+  deleteStoredRoom,
   listStoredRooms,
   loadLocalProfile,
   persistStoredRoomOrder,
@@ -31,6 +41,16 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 function replaceStoredRoom(rooms: StoredRoom[], replacement: StoredRoom) {
   return [...rooms.filter((room) => room.roomId !== replacement.roomId), replacement]
     .sort((left, right) => left.order - right.order);
+}
+
+function applyRoomMetadata(room: StoredRoom, metadata: RoomMetadata): StoredRoom {
+  return {
+    ...room,
+    title: metadata.title,
+    icon: metadata.icon,
+    metadataRevision: metadata.revision,
+    metadataVersionId: metadata.versionId,
+  };
 }
 
 function createUniqueRoomInvitation(rooms: StoredRoom[]) {
@@ -184,7 +204,13 @@ export function useTwoOnlyChat() {
       } catch {
         if (!active) return;
         const fallbackRooms: StoredRoom[] = urlInvitation
-          ? [{ ...urlInvitation, lastOpenedAt: Date.now(), order: 0 }]
+          ? [{
+              ...urlInvitation,
+              lastOpenedAt: Date.now(),
+              order: 0,
+              metadataRevision: 0,
+              metadataVersionId: "",
+            }]
           : [];
         setStoredRooms(fallbackRooms);
         setActiveRoomId(urlInvitation?.roomId ?? "");
@@ -228,6 +254,21 @@ export function useTwoOnlyChat() {
         onChange: (snapshot) => {
           if (!mountedRef.current) return;
           setRoomSnapshots((current) => ({ ...current, [snapshot.roomId]: snapshot }));
+        },
+        onRoomMetadata: (roomId, metadata) => {
+          if (!mountedRef.current) return;
+          setStoredRooms((current) => current.map((candidate) => {
+            if (candidate.roomId !== roomId) return candidate;
+            return compareRoomMetadataVersion(metadata, normalizeRoomMetadata(candidate)) > 0
+              ? applyRoomMetadata(candidate, metadata)
+              : candidate;
+          }));
+          void updateStoredRoomMetadata(roomId, metadata)
+            .then((updatedRoom) => {
+              if (!mountedRef.current) return;
+              setStoredRooms((current) => replaceStoredRoom(current, updatedRoom));
+            })
+            .catch(() => setRoomNotice(roomId, "已收到聊天室资料，但无法保存到本机。"));
         },
       });
       runtimesRef.current.set(room.roomId, runtime);
@@ -302,6 +343,8 @@ export function useTwoOnlyChat() {
       ...nextInvitation,
       lastOpenedAt: Date.now(),
       order: storedRooms.length,
+      metadataRevision: 0,
+      metadataVersionId: "",
     };
     setStoredRooms((current) => replaceStoredRoom(current, pendingRoom));
     activateInvitation(nextInvitation);
@@ -437,6 +480,63 @@ export function useTwoOnlyChat() {
       .catch(() => setActiveNotice("清除失败，请检查浏览器是否允许本地存储。"));
   };
 
+  const deleteLocalMessage = (messageId: string) => {
+    const runtime = runtimesRef.current.get(activeRoomIdRef.current);
+    if (!runtime) return;
+    const message = runtime.getSnapshot().messages.find((candidate) => candidate.id === messageId);
+    if (!message) return;
+    if (!window.confirm("只从这台设备删除这条消息？对方的记录不会变化。")) return;
+    void runtime.deleteMessage(messageId);
+  };
+
+  const deleteLocalRoom = (roomId: string) => {
+    const room = storedRooms.find((candidate) => candidate.roomId === roomId);
+    if (!room) return false;
+    if (!window.confirm("删除这台设备上的聊天、恢复密钥和本地记录？对方不会同步删除，且本机无法撤销。")) return false;
+
+    void (async () => {
+      const runtime = runtimesRef.current.get(roomId);
+      runtime?.dispose();
+      runtimesRef.current.delete(roomId);
+      try {
+        await deleteStoredRoom(roomId);
+      } catch {
+        setStoredRooms((current) => [...current]);
+        setGlobalNotice("无法删除这个聊天，连接已恢复，请检查本机存储权限后重试。");
+        return;
+      }
+
+      const remainingRooms = storedRooms.filter((candidate) => candidate.roomId !== roomId)
+        .map((candidate, order) => ({ ...candidate, order }));
+      setStoredRooms(remainingRooms);
+      setRoomSnapshots((current) => {
+        const next = { ...current };
+        delete next[roomId];
+        return next;
+      });
+
+      if (activeRoomIdRef.current !== roomId) {
+        setActiveNotice("这个聊天已从本机删除，对方的聊天不会变化。");
+        return;
+      }
+
+      const nextRoom = remainingRooms[0];
+      if (nextRoom) {
+        activateInvitation(
+          { roomId: nextRoom.roomId, secret: nextRoom.secret },
+          "上一个聊天已从本机删除。",
+        );
+      } else {
+        window.history.replaceState(null, "", `${window.location.origin}${window.location.pathname}`);
+        activeRoomIdRef.current = "";
+        setActiveRoomId("");
+        setDraft("");
+        setGlobalNotice("聊天已从本机删除，对方的聊天不会变化。");
+      }
+    })();
+    return true;
+  };
+
   const conversations = storedRooms.map((room) => {
     const snapshot = roomSnapshots[room.roomId];
     return {
@@ -470,12 +570,20 @@ export function useTwoOnlyChat() {
   };
 
   const updateStoredRoom = (roomId: string, patch: { title: string; icon: string }) => {
-    const normalizedPatch = {
+    const currentRoom = storedRooms.find((room) => room.roomId === roomId);
+    if (!currentRoom) return;
+    const currentMetadata = normalizeRoomMetadata(currentRoom);
+    const roomPatch = {
       title: patch.title.trim(),
       icon: patch.icon,
     };
+    const normalizedPatch = runtimesRef.current.get(roomId)?.updateRoomMetadata(roomPatch) ?? {
+      ...roomPatch,
+      revision: currentMetadata.revision + 1,
+      versionId: crypto.randomUUID(),
+    } satisfies RoomMetadata;
     setStoredRooms((current) => current.map((room) => room.roomId === roomId
-      ? { ...room, ...normalizedPatch }
+      ? applyRoomMetadata(room, normalizedPatch)
       : room));
     void updateStoredRoomMetadata(roomId, normalizedPatch)
       .then((room) => setStoredRooms((current) => replaceStoredRoom(current, room)))
@@ -515,6 +623,8 @@ export function useTwoOnlyChat() {
     stopRecording,
     copyInvite,
     clearLocalHistory,
+    deleteLocalMessage,
+    deleteLocalRoom,
     reconnect,
     diagnostics,
   };

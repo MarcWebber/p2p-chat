@@ -5,6 +5,7 @@ import type {
   ConnectionState,
   EncryptedWire,
   MessageKind,
+  RoomMetadata,
 } from "@/src/chat/types";
 import { SIGNAL_POLICY } from "@/src/config/policy";
 import { createMessageCrypto } from "@/src/crypto/messageCrypto";
@@ -18,9 +19,16 @@ import {
   isAttachmentStartPayload,
   type AttachmentDescriptor,
 } from "@/src/protocol/attachmentProtocol";
+import {
+  compareRoomMetadataVersion,
+  createRoomMetadataPayload,
+  isRoomMetadataPayload,
+  normalizeRoomMetadata,
+} from "@/src/protocol/roomMetadataProtocol";
 import { createSignalTransport } from "@/src/signal/signalTransport";
 import {
   clearEncryptedHistory,
+  deleteEncryptedMessage,
   loadEncryptedHistory,
   persistEncryptedMessage,
   type StoredRoom,
@@ -40,6 +48,7 @@ export type RoomRuntimeSnapshot = {
 type RoomRuntimeOptions = {
   room: StoredRoom;
   onChange: (snapshot: RoomRuntimeSnapshot) => void;
+  onRoomMetadata: (roomId: string, metadata: RoomMetadata) => void;
 };
 
 type SendMessageOptions = {
@@ -88,12 +97,15 @@ export class RoomRuntime {
   private transferEpoch = 0;
   private readonly incomingAttachments = new Map<string, IncomingAttachment>();
   private readonly objectUrls = new Set<string>();
+  private readonly deletedMessageIds = new Set<string>();
+  private roomMetadata: RoomMetadata;
   private snapshot: RoomRuntimeSnapshot;
 
   constructor(private readonly options: RoomRuntimeOptions) {
     this.roomId = options.room.roomId;
     this.secret = options.room.secret;
     this.messageCrypto = createMessageCrypto(this.secret);
+    this.roomMetadata = normalizeRoomMetadata(options.room);
     this.snapshot = {
       roomId: this.roomId,
       connection: "waiting",
@@ -133,11 +145,14 @@ export class RoomRuntime {
           sendSignal: (message) => this.transport?.send(message),
           onWire: (wire) => void this.acceptWire(wire),
           onConnectionChange: (connection, connectionMode) => {
+            const becameConnected = this.snapshot.connection !== "connected"
+              && connection === "connected";
             if (this.snapshot.connection === "connected" && connection !== "connected") {
               this.cancelActiveTransfers();
             }
             this.publish({ connection, connectionMode });
             this.transport?.setNegotiationActive(connection !== "connected");
+            if (becameConnected) void this.sendCurrentRoomMetadata();
           },
           onNotice: (notice) => this.setNotice(notice),
           onDiagnostic: this.diagnostics.report,
@@ -261,6 +276,48 @@ export class RoomRuntime {
     }
   }
 
+  updateRoomMetadata(patch: Pick<RoomMetadata, "title" | "icon">) {
+    if (this.disposed) return null;
+    const metadata: RoomMetadata = {
+      title: patch.title,
+      icon: patch.icon,
+      revision: this.roomMetadata.revision + 1,
+      versionId: crypto.randomUUID(),
+    };
+    this.roomMetadata = metadata;
+    if (this.snapshot.connection === "connected") {
+      void this.sendCurrentRoomMetadata();
+    } else {
+      this.setNotice("聊天室名称和图标已保存在本机，连接后会自动同步给对方。");
+    }
+    return metadata;
+  }
+
+  async deleteMessage(messageId: string) {
+    const message = this.snapshot.messages.find((candidate) => candidate.id === messageId);
+    if (!message || this.disposed) return false;
+    if (message.transferState === "sending" || message.transferState === "receiving") {
+      this.setNotice("附件传输完成或中断后才能删除这条消息。");
+      return false;
+    }
+
+    this.deletedMessageIds.add(messageId);
+    if (message.content.startsWith("blob:")) {
+      URL.revokeObjectURL(message.content);
+      this.objectUrls.delete(message.content);
+    }
+    this.publish({
+      messages: this.snapshot.messages.filter((candidate) => candidate.id !== messageId),
+      notice: "这条消息只从本机删除，对方的记录不会变化。",
+    });
+    try {
+      await deleteEncryptedMessage(this.roomId, messageId);
+    } catch {
+      this.setNotice("消息已从当前页面删除，但本机存储更新失败，刷新后可能重新出现。");
+    }
+    return true;
+  }
+
   reconnect() {
     if (this.disposed) return;
     this.diagnostics.report({
@@ -330,13 +387,17 @@ export class RoomRuntime {
         this.acceptAttachmentChunk(payload);
         return;
       }
+      if (isRoomMetadataPayload(payload, this.roomId)) {
+        this.acceptRoomMetadata(payload.metadata);
+        return;
+      }
     } catch {
       if (isAttachmentChunkPayload(payload)) this.failIncomingAttachment(payload.transferId);
       this.setNotice("收到的附件数据不完整，传输已经停止。");
       return;
     }
     const message = { ...(payload as ChatMessage), author: "peer" } satisfies ChatMessage;
-    if (!isSupportedMessage(message)) return;
+    if (!isSupportedMessage(message) || this.deletedMessageIds.has(message.id)) return;
     this.publish({ messages: mergeMessages(this.snapshot.messages, [message]) });
     try {
       await persistEncryptedMessage(this.roomId, wire, "peer");
@@ -347,6 +408,8 @@ export class RoomRuntime {
 
   private acceptAttachmentStart(payload: ReturnType<typeof createAttachmentStartPayload>) {
     if (
+      this.deletedMessageIds.has(payload.transferId)
+      ||
       this.incomingAttachments.has(payload.transferId)
       || this.snapshot.messages.some((message) => message.id === payload.transferId)
     ) return;
@@ -439,6 +502,29 @@ export class RoomRuntime {
     this.objectUrls.clear();
   }
 
+  private async sendCurrentRoomMetadata() {
+    if (this.disposed || this.snapshot.connection !== "connected") return false;
+    const metadata = this.roomMetadata;
+    const payload = createRoomMetadataPayload(this.roomId, metadata);
+    const wire = await this.messageCrypto.encryptPayload(
+      `room-metadata:${crypto.randomUUID()}`,
+      payload,
+    );
+    if (this.disposed || compareRoomMetadataVersion(metadata, this.roomMetadata) !== 0) return false;
+    const delivered = Boolean(await this.session?.send(wire));
+    if (!delivered && !this.disposed) {
+      this.setNotice("聊天室资料同步暂时失败，重新连接后会再次尝试。");
+    }
+    return delivered;
+  }
+
+  private acceptRoomMetadata(metadata: RoomMetadata) {
+    if (compareRoomMetadataVersion(metadata, this.roomMetadata) <= 0) return;
+    this.roomMetadata = metadata;
+    this.options.onRoomMetadata(this.roomId, metadata);
+    this.setNotice("已同步对方更新的聊天室名称和图标。");
+  }
+
   private async loadHistory() {
     try {
       const records = await loadEncryptedHistory(this.roomId);
@@ -447,7 +533,12 @@ export class RoomRuntime {
         author: localDirection,
       } satisfies ChatMessage)));
       if (this.disposed) return;
-      this.publish({ messages: mergeMessages(this.snapshot.messages, history) });
+      this.publish({
+        messages: mergeMessages(
+          this.snapshot.messages,
+          history.filter((message) => !this.deletedMessageIds.has(message.id)),
+        ),
+      });
     } catch {
       this.setNotice("无法读取这台设备上的聊天记录。");
     }
