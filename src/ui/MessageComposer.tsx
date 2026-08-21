@@ -8,7 +8,7 @@ import {
   type KeyboardEvent,
 } from "react";
 
-import type { ConnectionState } from "@/src/chat/types";
+import type { ConnectionState, MessageReplyReference } from "@/src/chat/types";
 import { CHAT_POLICY } from "@/src/config/policy";
 import { ExpressionPicker } from "@/src/ui/ExpressionPicker";
 import { formatBytes } from "@/src/utils/format";
@@ -16,8 +16,10 @@ import { formatBytes } from "@/src/utils/format";
 type MessageComposerProps = {
   connection: ConnectionState;
   draft: string;
+  replyingTo?: MessageReplyReference;
   isRecording: boolean;
   onDraftChange: (draft: string) => void;
+  onCancelReply: () => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
   onChooseImage: ChangeEventHandler<HTMLInputElement>;
   onChooseFile: ChangeEventHandler<HTMLInputElement>;
@@ -30,8 +32,10 @@ type MessageComposerProps = {
 export function MessageComposer({
   connection,
   draft,
+  replyingTo,
   isRecording,
   onDraftChange,
+  onCancelReply,
   onSubmit,
   onChooseImage,
   onChooseFile,
@@ -47,6 +51,10 @@ export function MessageComposer({
   useEffect(() => {
     if (!connected) setPickerOpen(false);
   }, [connected]);
+
+  useEffect(() => {
+    if (replyingTo) inputRef.current?.focus();
+  }, [replyingTo]);
 
   const insertExpression = (value: string) => {
     const start = inputRef.current?.selectionStart ?? draft.length;
@@ -99,6 +107,15 @@ export function MessageComposer({
           onInsertText={insertExpression}
           onSendSticker={onSendSticker}
         />
+        {replyingTo ? (
+          <div className="composer-reply" role="status">
+            <span>
+              <strong>回复 {replyingTo.nickname}</strong>
+              <small>{replyingTo.preview}</small>
+            </span>
+            <button type="button" onClick={onCancelReply} aria-label="取消回复">×</button>
+          </div>
+        ) : null}
         <div className="composer-tools">
           <button
             type="button"

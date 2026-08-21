@@ -5,8 +5,11 @@ import type {
   ConnectionState,
   EncryptedWire,
   MessageKind,
+  MessageReplyReference,
+  ProfileMetadata,
   RoomMetadata,
 } from "@/src/chat/types";
+import { isMessageReplyReference } from "@/src/chat/messageReply";
 import { SIGNAL_POLICY } from "@/src/config/policy";
 import { createMessageCrypto } from "@/src/crypto/messageCrypto";
 import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
@@ -20,11 +23,18 @@ import {
   type AttachmentDescriptor,
 } from "@/src/protocol/attachmentProtocol";
 import {
+  compareProfileMetadataVersion,
+  createProfileMetadataPayload,
+  isChatProfile,
+  isProfileMetadataPayload,
+} from "@/src/protocol/profileMetadataProtocol";
+import {
   compareRoomMetadataVersion,
   createRoomMetadataPayload,
   isRoomMetadataPayload,
   normalizeRoomMetadata,
 } from "@/src/protocol/roomMetadataProtocol";
+import type { RoomMembership } from "@/src/room/memberIdentity";
 import { createSignalTransport } from "@/src/signal/signalTransport";
 import {
   clearEncryptedHistory,
@@ -41,20 +51,25 @@ export type RoomRuntimeSnapshot = {
   connection: ConnectionState;
   connectionMode: string;
   messages: ChatMessage[];
+  peerProfile?: ChatProfile;
   notice: string;
   diagnostics: ConnectionDiagnostics;
 };
 
 type RoomRuntimeOptions = {
   room: StoredRoom;
+  localProfile: ProfileMetadata;
   onChange: (snapshot: RoomRuntimeSnapshot) => void;
   onRoomMetadata: (roomId: string, metadata: RoomMetadata) => void;
+  onRoomMembership: (roomId: string, peerPublicKey: string) => Promise<RoomMembership | null>;
+  onPeerProfile: (roomId: string, metadata: ProfileMetadata) => void;
 };
 
 type SendMessageOptions = {
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
+  replyTo?: MessageReplyReference;
 };
 
 type IncomingAttachment = {
@@ -76,12 +91,17 @@ function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
 
 function isSupportedMessage(message: ChatMessage) {
   const kind = (message as { kind?: unknown }).kind;
+  const replyTo = (message as { replyTo?: unknown }).replyTo;
   return (
     kind === "text" || kind === "image" || kind === "audio" || kind === "file"
   )
     && typeof message.id === "string"
+    && message.id.length > 0
+    && message.id.length <= 128
     && typeof message.content === "string"
-    && typeof message.createdAt === "number";
+    && typeof message.createdAt === "number"
+    && Number.isFinite(message.createdAt)
+    && (replyTo === undefined || isMessageReplyReference(replyTo));
 }
 
 export class RoomRuntime {
@@ -99,6 +119,8 @@ export class RoomRuntime {
   private readonly objectUrls = new Set<string>();
   private readonly deletedMessageIds = new Set<string>();
   private roomMetadata: RoomMetadata;
+  private localProfile: ProfileMetadata;
+  private peerProfile: ProfileMetadata | undefined;
   private snapshot: RoomRuntimeSnapshot;
 
   constructor(private readonly options: RoomRuntimeOptions) {
@@ -106,11 +128,14 @@ export class RoomRuntime {
     this.secret = options.room.secret;
     this.messageCrypto = createMessageCrypto(this.secret);
     this.roomMetadata = normalizeRoomMetadata(options.room);
+    this.localProfile = options.localProfile;
+    this.peerProfile = options.room.peerProfile;
     this.snapshot = {
       roomId: this.roomId,
       connection: "waiting",
       connectionMode: "等待另一位成员",
       messages: [],
+      peerProfile: this.peerProfile?.profile,
       notice: "",
       diagnostics: this.diagnostics,
     };
@@ -139,10 +164,14 @@ export class RoomRuntime {
       .then(({ configuration, turnConfigured }) => {
         if (this.disposed) return;
         const session = new WebRtcSession({
+          roomId: this.roomId,
+          roomSecret: this.secret,
           participantId: this.participantId,
+          membership: this.options.room.membership,
           iceConfiguration: configuration,
           turnConfigured,
           sendSignal: (message) => this.transport?.send(message),
+          claimPeerPublicKey: (publicKey) => this.options.onRoomMembership(this.roomId, publicKey),
           onWire: (wire) => void this.acceptWire(wire),
           onConnectionChange: (connection, connectionMode) => {
             const becameConnected = this.snapshot.connection !== "connected"
@@ -152,7 +181,10 @@ export class RoomRuntime {
             }
             this.publish({ connection, connectionMode });
             this.transport?.setNegotiationActive(connection !== "connected");
-            if (becameConnected) void this.sendCurrentRoomMetadata();
+            if (becameConnected) {
+              void this.sendCurrentRoomMetadata();
+              void this.sendCurrentProfile();
+            }
           },
           onNotice: (notice) => this.setNotice(notice),
           onDiagnostic: this.diagnostics.report,
@@ -293,6 +325,12 @@ export class RoomRuntime {
     return metadata;
   }
 
+  updateLocalProfile(metadata: ProfileMetadata) {
+    if (compareProfileMetadataVersion(metadata, this.localProfile) <= 0) return;
+    this.localProfile = metadata;
+    if (this.snapshot.connection === "connected") void this.sendCurrentProfile();
+  }
+
   async deleteMessage(messageId: string) {
     const message = this.snapshot.messages.find((candidate) => candidate.id === messageId);
     if (!message || this.disposed) return false;
@@ -391,6 +429,10 @@ export class RoomRuntime {
         this.acceptRoomMetadata(payload.metadata);
         return;
       }
+      if (isProfileMetadataPayload(payload, this.roomId)) {
+        this.acceptPeerProfile(payload.metadata);
+        return;
+      }
     } catch {
       if (isAttachmentChunkPayload(payload)) this.failIncomingAttachment(payload.transferId);
       this.setNotice("收到的附件数据不完整，传输已经停止。");
@@ -398,6 +440,7 @@ export class RoomRuntime {
     }
     const message = { ...(payload as ChatMessage), author: "peer" } satisfies ChatMessage;
     if (!isSupportedMessage(message) || this.deletedMessageIds.has(message.id)) return;
+    this.acceptPeerProfileFallback(message.profile);
     this.publish({ messages: mergeMessages(this.snapshot.messages, [message]) });
     try {
       await persistEncryptedMessage(this.roomId, wire, "peer");
@@ -413,6 +456,7 @@ export class RoomRuntime {
       this.incomingAttachments.has(payload.transferId)
       || this.snapshot.messages.some((message) => message.id === payload.transferId)
     ) return;
+    this.acceptPeerProfileFallback(payload.descriptor.profile);
     this.incomingAttachments.set(payload.transferId, {
       descriptor: payload.descriptor,
       total: payload.total,
@@ -518,11 +562,52 @@ export class RoomRuntime {
     return delivered;
   }
 
+  private async sendCurrentProfile() {
+    if (this.disposed || this.snapshot.connection !== "connected") return false;
+    const metadata = this.localProfile;
+    const payload = createProfileMetadataPayload(this.roomId, metadata);
+    const wire = await this.messageCrypto.encryptPayload(
+      `profile-metadata:${crypto.randomUUID()}`,
+      payload,
+    );
+    if (
+      this.disposed
+      || compareProfileMetadataVersion(metadata, this.localProfile) !== 0
+    ) return false;
+    const delivered = Boolean(await this.session?.send(wire));
+    if (!delivered && !this.disposed) {
+      this.setNotice("头像和昵称同步暂时失败，重新连接后会再次尝试。");
+    }
+    return delivered;
+  }
+
   private acceptRoomMetadata(metadata: RoomMetadata) {
     if (compareRoomMetadataVersion(metadata, this.roomMetadata) <= 0) return;
     this.roomMetadata = metadata;
     this.options.onRoomMetadata(this.roomId, metadata);
     this.setNotice("已同步对方更新的聊天室名称和图标。");
+  }
+
+  private acceptPeerProfile(metadata: ProfileMetadata) {
+    if (
+      this.peerProfile
+      && compareProfileMetadataVersion(metadata, this.peerProfile) <= 0
+    ) return;
+    this.peerProfile = metadata;
+    this.publish({ peerProfile: metadata.profile });
+    this.options.onPeerProfile(this.roomId, metadata);
+  }
+
+  private acceptPeerProfileFallback(profile: ChatProfile | undefined) {
+    if (!isChatProfile(profile) || (this.peerProfile && this.peerProfile.revision > 0)) return;
+    if (
+      this.peerProfile?.profile.nickname === profile.nickname
+      && this.peerProfile.profile.avatar === profile.avatar
+    ) return;
+    const metadata = { profile, revision: 0, versionId: "" } satisfies ProfileMetadata;
+    this.peerProfile = metadata;
+    this.publish({ peerProfile: profile });
+    this.options.onPeerProfile(this.roomId, metadata);
   }
 
   private async loadHistory() {
@@ -533,6 +618,14 @@ export class RoomRuntime {
         author: localDirection,
       } satisfies ChatMessage)));
       if (this.disposed) return;
+      if (!this.peerProfile) {
+        for (let index = history.length - 1; index >= 0; index -= 1) {
+          const message = history[index];
+          if (message.author !== "peer" || !isChatProfile(message.profile)) continue;
+          this.acceptPeerProfileFallback(message.profile);
+          break;
+        }
+      }
       this.publish({
         messages: mergeMessages(
           this.snapshot.messages,

@@ -37,7 +37,7 @@ export const UI_POLICY = {
 } as const;
 
 export const SIGNAL_POLICY = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   maxIdLength: 128,
   maxSdpLength: 1_000_000,
   maxCandidateLength: 8_192,
@@ -56,6 +56,7 @@ export const SIGNAL_POLICY = {
 
 export const SIGNAL_REJECTION_REASON = {
   roomFull: "room-full",
+  memberLocked: "member-locked",
 } as const;
 
 export const RTC_POLICY = {

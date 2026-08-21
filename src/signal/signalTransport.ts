@@ -176,11 +176,7 @@ export function createSignalTransport({
       for (const provider of providers) provider.start();
     },
     send(message: SignalMessage) {
-      const routed = {
-        ...message,
-        signalId: crypto.randomUUID(),
-        sentAt: Date.now(),
-      } as RoutedSignalMessage;
+      const routed = message as RoutedSignalMessage;
       onDiagnostic(signalDiagnostic(routed, "sent"));
       for (const provider of providers) provider.send(routed);
     },

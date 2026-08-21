@@ -70,10 +70,10 @@ Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时
 | `src/signal` | 信令校验、Supabase/HTTPS 适配、双发去重和短时 Redis Stream | 聊天正文、PeerConnection 生命周期 |
 | `src/server` | Route Handler 共用的同源请求校验 | 浏览器状态、房间密钥 |
 | `src/webrtc` | Offer/Answer、ICE、DataChannel、发送背压、重连和 ICE Server 规范化 | React UI、本地历史 |
-| `src/storage` | IndexedDB 房间目录、密文历史与本机消息方向 | 加解密、Supabase Database/Storage |
-| `src/room` | 无角色邀请链接的解析与生成 | 连接状态机 |
+| `src/storage` | IndexedDB 房间目录、成员凭证、密文历史与本机消息方向 | 加解密、Supabase Database/Storage |
+| `src/room` | 邀请链接和每房间 P-256 成员身份 | 连接状态机、账号身份 |
 | `src/media` | 录音生命周期 | 消息加密、通用浏览器文件转换 |
-| `src/protocol` | 密文信封分片、附件分块、重组和协议格式 | 网络连接、React 状态 |
+| `src/protocol` | 密文信封分片、附件分块、资料同步、重组和协议格式 | 网络连接、React 状态 |
 | `src/ui` | 首页、聊天页和展示组件 | 直接访问 Supabase、WebRTC 或浏览器存储 |
 | `src/utils` | 剪贴板、Data URL、时间/容量格式、短 ID 和通用类型守卫 | 领域状态、网络策略、服务端秘密 |
 
@@ -91,56 +91,62 @@ Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时
 
 ## 3. 邀请链接与页面身份
 
-任意一端创建聊天时生成两个随机值：
+创建聊天时生成两个随机值和一对仅属于该房间的 P-256 ECDSA 密钥：
 
 ```text
 roomId = randomToken(9)      # Supabase topic 标识
 secret = randomToken(32)     # 约 256 位随机会话秘密
+memberKeyPair = P-256 ECDSA  # 创建者在这个房间的成员身份
 ```
 
 邀请链接格式：
 
 ```text
-https://站点/?room=<roomId>#<secret>
+https://站点/?room=<roomId>#secret=<secret>&owner=<ownerPublicKey>
 ```
 
 - `room` 用于选择 Supabase topic 和 Redis Stream：`twoonly:<roomId>` / `twoonly:https-signal:<roomId>`。
-- `secret` 放在 URL Fragment 中，浏览器不会把 Fragment 作为 HTTP 请求路径发送给 Vercel；客户端脚本从 `window.location.hash` 读取它并派生 AES 密钥。
+- `secret` 和创建者公钥 `owner` 都放在 URL Fragment 中。浏览器不会把 Fragment 作为 HTTP 请求路径发送给 Vercel；客户端脚本从 `window.location.hash` 读取 `secret` 并派生 AES 密钥，用 `owner` 预先限定对端成员。
 - 两端显示从同一 `secret` 计算出的安全码，用户可通过另一个可信渠道核对。
-- 每次页面加载都会生成新的随机 `participantId`。它用于本次页面的信令寻址和 Offer 发起方选举，不是账号或长期设备身份。
+- 每个房间的成员公钥、可导出的私钥材料和已确认对端公钥保存在本机 IndexedDB；`memberId` 由成员公钥计算。它们只标识“本浏览器在这个房间的席位”，不是账号、MAC、浏览器指纹或跨设备身份。
+- 每次页面加载仍会生成新的随机 `participantId`。它只用于本次页面的信令寻址和 Offer 发起方选举；同一个持久成员刷新页面后会得到新的 `participantId`，但继续使用原房间成员密钥。
 
-解析器只读取 `room` 和 fragment 中的 `secret`。URL 中的其他参数不会进入邀请对象，也不会影响谁发送 Offer、创建 DataChannel 或恢复消息方向。
+解析器只读取 `room` 以及 fragment 中的 `secret`、`owner`。旧式 `#<secret>` 链接仍可解析，但没有本地已保存房间记录的新浏览器会拒绝这类缺少创建者公钥的邀请，避免两名后来者复用旧房间。URL 中的 `role` 等其他参数不会进入邀请对象，也不会影响谁发送 Offer、创建 DataChannel 或恢复消息方向。
 
 ## 4. “只允许两个人”的实现
 
-每个页面实例生成随机 `participantId`，并在 Supabase 或 HTTPS 至少一条信令可用后周期性广播 protocol v2 `hello`。同一信令携带 `signalId` 并发送到所有通道，重复到达时在进入状态机前丢弃。双方收到对方 Hello 后各自在内存中锁定同一个 peer，并通过 `participantId` 字符串比较得到一致结论：较小 ID 是本轮临时 Offer 发起方，同时创建 DataChannel；另一端处理 Offer 并返回 Answer。连接打开后，两端能力完全相同，没有长期房主或访客角色。
+每个页面实例生成随机 `participantId`，并在 Supabase 或 HTTPS 至少一条信令可用后周期性广播 Signal protocol v3 `hello`。Hello、Offer、Answer、Candidate 和 Rejected 都携带成员公钥、由公钥派生的 `memberId`，以及对房间 ID、会话秘密与稳定信令内容所作的 P-256 ECDSA 签名；无法验签的信令在进入 PeerLock 和 WebRTC 状态机前即被忽略。同一信令还携带 `signalId` 并发送到所有通道，重复到达时在进入状态机前丢弃。
+
+创建者在收到首个有效但尚未登记的成员信令时，以 IndexedDB 单个读写事务原子确认第二席位；之后两个端点各自保存自己的私钥材料和对端公钥。后续只有这两把成员公钥签出的信令能进入协商。双方再通过页面级 `participantId` 字符串比较得到一致结论：较小 ID 是本轮临时 Offer 发起方，同时创建 DataChannel；另一端处理 Offer 并返回 Answer。连接打开后，两端能力完全相同，`owner` 只承担初次邀请的信任锚，不形成长期 UI 权限角色。
 
 信令同时携带 `fromEpoch`、面向对端的 `toEpoch` 和每轮随机 `negotiationId`。本端重连时递增 local epoch；收到对方更大的 remote epoch 时关闭旧 Peer 并进入新轮次。Answer 和 Candidate 必须同时命中参与者、双方 epoch 与 negotiation ID；远端描述尚未就绪时，Candidate 也按这组键分桶缓存，避免旧轮次污染新连接。
 
-第三个页面广播 Hello 时，两个已连接页面都会因为 peer lock 已被占用而回复 `rejected(room-full)`。DataChannel 已打开时不会因超时让位；只有通道没有打开，并且旧 Peer 已明确失败/关闭，或连续 10 秒没有旧 peer 信令时，锁才允许新的页面实例接替。这是一种运行时恢复策略，不是服务端成员认证。
+第三个成员广播 Hello 时，已锁定房间会在验签后发现其公钥不属于两个席位，并回复签名的 `rejected(member-locked)`。断线、空房、页面关闭或 PeerLock 超时都不会转让成员席位；原来的两个成员仍可凭 IndexedDB 中的房间私钥重新进入。
 
-这能满足临时双人房间的 MVP 需求，但有四个明确限制：
+`PeerLock` 仍然存在，但只处理同一合法成员可能同时出现的页面实例、epoch 和协商轮次。旧页面失败或超时后，新页面实例可以接替连接；Membership 不会因此接受一把新公钥。
 
-1. 锁分别存在两个页面的内存中；页面全部关闭后没有持久成员席位。
-2. 没有账号或公钥身份，拿到完整链接并先完成互锁的页面占用位置。
-3. 公共 Broadcast topic 不是访问控制；随机 `roomId` 和邀请秘密降低误入概率，但不是认证机制。
-4. 三个页面近同时首次进入时，可能因 Hello 到达顺序不同形成临时非对称锁；当前没有服务端成员槽仲裁，需关闭多余页面后重连。
+这套约束不依赖中心成员数据库，但仍有四个明确边界：
 
-若要升级为严格的双人产品，应增加一次性邀请核销、持久化成员公钥、签名握手和私有 Realtime Channel 授权。
+1. 第二席位尚未确认前，拿到完整邀请链接的人仍可能抢先成为首个验签接收者；原子写入解决本机并发覆盖，不是服务端全局邀请核销。
+2. 成员私钥是 IndexedDB 中的本地可导出材料，不是硬件安全密钥。清除站点数据、删除该房间或换设备都会丢失本机席位凭证；仅凭旧邀请链接不能恢复已经锁定的席位。
+3. 不读取或保存 MAC、deviceId、浏览器指纹，也没有账号和跨设备身份。要迁移席位必须另行实现安全的密钥导出/导入或账号恢复，本版本没有该能力。
+4. 公共 Broadcast topic 不是私有订阅授权。成员签名阻止陌生公钥进入 WebRTC 协商，但知道 `roomId` 的客户端仍可能观察信令元数据或制造可用性干扰。
+
+旧版本保存的房间没有成员密钥或历史身份凭据。升级后，每个仍保存该房间的端点会生成成员密钥；最先完成 v3 相互验签的两个已保存端点会确定创建者和第二成员并固化两席，但系统无法证明它们就是最初创建、加入的两人。没有对应 IndexedDB 房间记录的新浏览器不能使用缺少 `owner` 的旧邀请链接加入。
 
 ## 5. 状态与生命周期
 
-每个房间的连接状态都是 `waiting → connecting → connected`，失败或关闭后进入 `disconnected`。聊天控制器按 `roomId` 保存一组 `RoomRuntime`；每个运行时独立持有随机页面级 `participantId`、消息加密器、信令传输、`WebRtcSession`、消息和诊断状态。IndexedDB 的 `rooms` object store 继续以 `roomId` 为唯一键，不生成或保存 MAC、deviceId 或浏览器指纹。
+每个房间的连接状态都是 `waiting → connecting → connected`，失败或关闭后进入 `disconnected`。聊天控制器按 `roomId` 保存一组 `RoomRuntime`；每个运行时独立持有随机页面级 `participantId`、房间成员身份、消息加密器、信令传输、`WebRtcSession`、消息和诊断状态。IndexedDB 的 `rooms` object store 继续以 `roomId` 为唯一键，保存会话秘密、成员密钥与对端公钥，但不生成或保存 MAC、deviceId 或浏览器指纹。
 
-页面启动时会为全部已保存房间创建运行时。侧栏切换只更新当前展示的 `activeRoomId`、URL 和输入状态，不销毁其他房间的 PeerConnection、DataChannel 或信令订阅；只有房间凭证被替换、房间被移除或页面卸载时才释放对应运行时。因此一台机器可以同时维持多个彼此独立的双人房间，而每个房间内部仍由 `PeerLock` 限制为一个对端。
+页面启动时会为全部已保存房间创建运行时。侧栏切换只更新当前展示的 `activeRoomId`、URL 和输入状态，不销毁其他房间的 PeerConnection、DataChannel 或信令订阅；只有房间凭证被替换、房间被移除或页面卸载时才释放对应运行时。因此一台机器可以同时维持多个彼此独立的双人房间；每个房间先由持久 Membership 限定两把成员公钥，再由 `PeerLock` 限制当前连接到一个合法对端页面实例。
 
-`WebRtcSession` 现在使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。实例创建后已经具备发现能力，信令就绪才启动 Hello 定时器，因此不再保留没有独立行为的 `idle` 和空 `start()`。对端身份收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连或换届时通过一个入口清理 Peer、协商和 Candidate 缓存。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
+`WebRtcSession` 现在使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。实例创建后已经具备发现能力，信令就绪才启动 Hello 定时器，因此不再保留没有独立行为的 `idle` 和空 `start()`。持久成员公钥先完成准入；同一成员的页面实例收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连时通过一个入口清理 Peer、协商和 Candidate 缓存，但不清除持久 Membership。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
 
 诊断日志统一经过 `trace(stage, code, message, options)`，连接状态和用户提示统一经过 `show(...)`。这两个入口保留了完整排障证据链，但删除了散落在主流程里的重复日志对象。Candidate 解析和最终 Candidate Pair 统计移到纯函数模块 `rtcStats.ts`，不再挤占会话状态机。
 
 聊天消息中的 `author` 使用 `self / peer`，只表达本机 UI 方向。方向元数据随密文写入 IndexedDB，刷新或关闭标签页后仍可恢复。存储层只读取当前 IndexedDB 结构；无效记录会明确失败，不再回退到旧存储或猜测消息方向。
 
-聊天名称和图标使用独立的 `room-metadata` 加密控制消息，不混入消息列表。每次修改生成递增 revision 和随机 version ID；双方同时修改同一 revision 时按 version ID 确定唯一胜者，连接建立后各自重发当前版本以完成收敛。消息删除和聊天删除则刻意保持本地语义，不广播 tombstone，也不承诺双方历史一致。
+聊天名称和图标使用独立的 `room-metadata` 加密控制消息，不混入消息列表。昵称和头像使用独立的 `profile-metadata` 加密控制消息；接收端把最新资料写入房间并作为消息列表的显示覆盖层，因此历史消息会显示最新头像和昵称，但既有消息密文不会被重写。两类元数据都通过 revision 和 version ID 收敛，并在连接建立后重发当前版本。消息删除和聊天删除则刻意保持本地语义，不广播 tombstone，也不承诺双方历史一致。
 
 ## 6. 文件结构
 
@@ -174,9 +180,11 @@ twoonly/
 │   │   └── useAudioRecorder.ts     # 录音生命周期
 │   ├── protocol/
 │   │   ├── attachmentProtocol.ts   # 大附件分块、校验与 Base64 编解码
+│   │   ├── profileMetadataProtocol.ts # 昵称头像资料的加密控制帧
 │   │   └── wireProtocol.ts         # 密文分片编码与重组
 │   ├── room/
-│   │   └── invitation.ts           # 房间 URL 与邀请链接
+│   │   ├── invitation.ts           # 房间 URL 与邀请链接
+│   │   └── memberIdentity.ts       # 每房间 P-256 成员密钥与信令签名
 │   ├── signal/
 │   │   ├── types.ts                       # 信令协议与结构校验
 │   │   ├── supabaseSignalTransport.ts     # Supabase WebSocket 信令
@@ -192,7 +200,7 @@ twoonly/
 │   │   ├── LandingScreen.tsx       # 首页与 Wiki
 │   │   ├── ChatScreen.tsx          # 聊天页组合
 │   │   ├── ChatHeader.tsx          # 状态与房间操作
-│   │   ├── ConnectionDiagnosticsPanel.tsx # 六阶段连接诊断面板
+│   │   ├── ConnectionDiagnosticsPanel.tsx # 保留的开发诊断面板，默认不渲染
 │   │   ├── ChatSidebar.tsx         # 当前会话摘要
 │   │   ├── MessageList.tsx         # 消息展示
 │   │   └── MessageComposer.tsx     # 文字/图片/语音/文件与剪贴板输入
@@ -262,8 +270,8 @@ flowchart TD
 - 业务模块不直接读取 `process.env`；公开变量只能进入 `publicRuntime.ts`，长期 Token 只能进入 `serverRuntime.ts`；
 - `policy.ts` 只保存跨模块策略与协议值，组件独有文案和展示映射留在组件附近，防止配置文件变成新的杂物间；
 - `utils` 只接收普通参数并返回结果，不反向依赖 Chat、Signal 或 WebRTC 状态机；
-- Signal 只传递并校验信令结构，不依赖具体 UI；
+- Signal 只传递并校验信令结构，不依赖具体 UI；成员签名和房间席位校验必须在进入 WebRTC 状态机前完成；
 - WebRTC 只传输 `EncryptedWire`，不持有 AES 密钥或明文消息；
 - Storage 只保存密文信封，不自行加解密；
 - Crypto 的密钥实例绑定单个房间秘密，不能跨房间复用；
-- 当前 Signal protocol v2 只做结构、版本、目标 ID、epoch 与协商轮次校验，没有数字签名。未来增加信令认证时，应在 Crypto 中增加独立的 HMAC/签名模块，而不是把它伪装成已有能力。
+- 当前 Signal protocol v3 要求每条 Hello、Offer、Answer、Candidate 和 Rejected 都带每房间 P-256 ECDSA 成员签名；`participantId`、epoch 与 negotiation ID 继续只负责页面实例和协商轮次，不能替代持久 Membership。

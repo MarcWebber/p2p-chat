@@ -11,11 +11,24 @@ export type ChatProfile = {
   avatar: string;
 };
 
+export type ProfileMetadata = {
+  profile: ChatProfile;
+  revision: number;
+  versionId: string;
+};
+
 export type RoomMetadata = {
   title?: string;
   icon?: string;
   revision: number;
   versionId: string;
+};
+
+export type MessageReplyReference = {
+  messageId: string;
+  kind: MessageKind;
+  nickname: string;
+  preview: string;
 };
 
 export type ChatMessage = {
@@ -31,6 +44,7 @@ export type ChatMessage = {
   transferProgress?: number;
   transient?: boolean;
   profile?: ChatProfile;
+  replyTo?: MessageReplyReference;
 };
 
 export type EncryptedWire = {

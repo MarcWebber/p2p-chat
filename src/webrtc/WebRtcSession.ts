@@ -15,21 +15,33 @@ import {
 } from "@/src/diagnostics/connectionDiagnostics";
 import { encodeEncryptedWire, EncryptedWireAssembler } from "@/src/protocol/wireProtocol";
 import {
+  expectedPeerPublicKey,
+  signRoomSignal,
+  verifyRoomSignal,
+  type RoomMembership,
+  type VerifiedRoomMember,
+} from "@/src/room/memberIdentity";
+import {
   type AnswerSignal,
   type CandidateSignal,
   type HelloSignal,
   type OfferSignal,
   type OutgoingSignal,
   type SignalMessage,
+  type UnsignedSignalMessage,
 } from "@/src/signal/types";
 import { shortId } from "@/src/utils/format";
 import { describeCandidate, inspectConnectionPath } from "@/src/webrtc/rtcStats";
 
 type SessionOptions = {
+  roomId: string;
+  roomSecret: string;
   participantId: string;
+  membership: RoomMembership;
   iceConfiguration: RTCConfiguration;
   turnConfigured: boolean;
   sendSignal: (message: SignalMessage) => void;
+  claimPeerPublicKey: (publicKey: string) => Promise<RoomMembership | null>;
   onWire: (wire: EncryptedWire) => void;
   onConnectionChange: (state: ConnectionState, mode: string) => void;
   onNotice: (notice: string) => void;
@@ -79,9 +91,13 @@ export class WebRtcSession {
   private signalWarningShown = false;
   private electionKey = "";
   private signalQueue = Promise.resolve();
+  private signalSendQueue = Promise.resolve();
   private sendQueue = Promise.resolve();
+  private allowedPeerPublicKey: string | undefined;
 
-  constructor(private readonly options: SessionOptions) {}
+  constructor(private readonly options: SessionOptions) {
+    this.allowedPeerPublicKey = expectedPeerPublicKey(options.membership);
+  }
 
   onSignalReady() {
     if (this.phase === "disposed") return;
@@ -185,12 +201,33 @@ export class WebRtcSession {
   }
 
   private sendSignal(message: OutgoingSignal) {
-    this.options.sendSignal({
+    const unsigned = {
       ...message,
       protocol: SIGNAL_POLICY.protocolVersion,
       from: this.options.participantId,
       fromEpoch: this.localEpoch,
-    } as SignalMessage);
+      signalId: crypto.randomUUID(),
+      sentAt: Date.now(),
+    } as UnsignedSignalMessage;
+    this.signalSendQueue = this.signalSendQueue
+      .then(async () => {
+        const signal = await signRoomSignal(
+          this.options.roomId,
+          this.options.roomSecret,
+          unsigned,
+          this.options.membership.identity,
+        );
+        if (this.phase !== "disposed") this.options.sendSignal(signal);
+      })
+      .catch((error: unknown) => {
+        if (this.phase === "disposed") return;
+        this.trace("signal", "signal.membership.sign.failed", "成员信令签名失败", {
+          level: "error",
+          details: diagnosticErrorDetails(error),
+          dedupeKey: "membership-sign-failed",
+        });
+        this.show("disconnected", "无法验证本机成员身份", "本机成员凭证不可用，请重新打开这个聊天。");
+      });
   }
 
   private createPeer(side: NegotiationSide, negotiation: Negotiation) {
@@ -719,6 +756,30 @@ export class WebRtcSession {
     }
   }
 
+  private async authorizeMember(signal: SignalMessage, member: VerifiedRoomMember) {
+    if (member.publicKey === this.options.membership.identity.publicKey) return false;
+    if (this.allowedPeerPublicKey) return member.publicKey === this.allowedPeerPublicKey;
+    if (signal.type !== "hello") return false;
+    try {
+      const membership = await this.options.claimPeerPublicKey(member.publicKey);
+      const expected = membership ? expectedPeerPublicKey(membership) : undefined;
+      if (!membership || expected !== member.publicKey) return false;
+      this.allowedPeerPublicKey = expected;
+      this.trace("hello", "member.locked", "房间已锁定最初两位成员", {
+        level: "success",
+        details: { peerMemberId: shortId(member.memberId) },
+      });
+      return true;
+    } catch (error: unknown) {
+      this.trace("hello", "member.persist.failed", "无法保存对端成员凭证", {
+        level: "error",
+        details: diagnosticErrorDetails(error),
+      });
+      this.show("disconnected", "无法锁定房间成员", "本机无法保存成员凭证，已停止本次连接。");
+      return false;
+    }
+  }
+
   private async processSignal(signal: SignalMessage) {
     if (this.phase === "disposed" || signal.from === this.options.participantId) return;
     if ("to" in signal && signal.to && signal.to !== this.options.participantId) return;
@@ -728,6 +789,38 @@ export class WebRtcSession {
         details: { type: signal.type, targetEpoch: signal.toEpoch, localEpoch: this.localEpoch },
         dedupeKey: `stale-epoch-${signal.type}`,
       });
+      return;
+    }
+    const member = await verifyRoomSignal(
+      this.options.roomId,
+      this.options.roomSecret,
+      signal,
+    );
+    if (!member) {
+      this.trace("signal", "signal.membership.invalid", "忽略无法验证成员签名的信令", {
+        level: "warn",
+        details: { type: signal.type },
+        dedupeKey: "invalid-member-signature",
+      });
+      return;
+    }
+    if (!await this.authorizeMember(signal, member)) {
+      if (
+        signal.type === "hello"
+        && member.publicKey !== this.options.membership.identity.publicKey
+      ) {
+        this.sendSignal({
+          type: "rejected",
+          to: signal.from,
+          toEpoch: signal.fromEpoch,
+          reason: SIGNAL_REJECTION_REASON.memberLocked,
+        });
+        this.trace("hello", "member.rejected", "拒绝不属于本房间的成员凭证", {
+          level: "warn",
+          details: { peerMemberId: shortId(member.memberId) },
+          dedupeKey: `member-rejected-${member.memberId}`,
+        });
+      }
       return;
     }
     if (signal.from === this.lock?.id && signal.fromEpoch >= this.lock.epoch) this.lock.seenAt = Date.now();
@@ -745,7 +838,14 @@ export class WebRtcSession {
     this.phase = "full";
     this.rejectedUntil = Date.now() + RTC_POLICY.rejectBackoffMs;
     this.enableAnnouncements(false);
-    this.show("disconnected", "这个会话已经有两位成员", "无法加入：会话成员已锁定为两个人。");
+    const memberLocked = signal.reason === SIGNAL_REJECTION_REASON.memberLocked;
+    this.show(
+      "disconnected",
+      memberLocked ? "这个房间只属于最初的两位成员" : "这个会话已经有两位成员",
+      memberLocked
+        ? "无法加入：当前浏览器没有这个房间的原始成员凭证。"
+        : "无法加入：会话成员已锁定为两个人。",
+    );
     this.trace("hello", "hello.rejected", "当前页面被已有双人会话拒绝", {
       level: "warn",
       details: { reason: signal.reason },

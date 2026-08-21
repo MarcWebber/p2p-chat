@@ -4,12 +4,19 @@ import { isRecord } from "@/src/utils/guards";
 
 const PUBLIC_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
+export type SignalMembershipProof = {
+  memberId: string;
+  publicKey: string;
+  signature: string;
+};
+
 type SignalBase = {
   protocol: typeof SIGNAL_POLICY.protocolVersion;
   from: string;
   fromEpoch: number;
-  signalId?: string;
-  sentAt?: number;
+  member: SignalMembershipProof;
+  signalId: string;
+  sentAt: number;
 };
 
 export type HelloSignal = SignalBase & {
@@ -59,12 +66,31 @@ export type RoutedSignalMessage = SignalMessage & {
   sentAt: number;
 };
 
+type DistributiveOmit<Value, Keys extends PropertyKey> = Value extends unknown
+  ? Omit<Value, Keys>
+  : never;
+
+export type UnsignedSignalMessage = DistributiveOmit<SignalMessage, "member">;
+
 export type OutgoingSignal<Message extends SignalMessage = SignalMessage> = Message extends SignalMessage
-  ? Omit<Message, "protocol" | "from" | "fromEpoch">
+  ? Omit<Message, "protocol" | "from" | "fromEpoch" | "member" | "signalId" | "sentAt">
   : never;
 
 function isPositiveEpoch(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function hasValidMembership(value: unknown): value is SignalMembershipProof {
+  if (!isRecord(value)) return false;
+  return isPublicSignalId(value.memberId)
+    && typeof value.publicKey === "string"
+    && value.publicKey.length >= 80
+    && value.publicKey.length <= 512
+    && PUBLIC_ID_PATTERN.test(value.publicKey)
+    && typeof value.signature === "string"
+    && value.signature.length >= 64
+    && value.signature.length <= 256
+    && PUBLIC_ID_PATTERN.test(value.signature);
 }
 
 export function isPublicSignalId(value: unknown): value is string {
@@ -111,8 +137,9 @@ export function isSignalMessage(value: unknown): value is SignalMessage {
     signal.protocol !== SIGNAL_POLICY.protocolVersion
     || !isPublicSignalId(signal.from)
     || !isPositiveEpoch(signal.fromEpoch)
-    || (signal.signalId !== undefined && !isPublicSignalId(signal.signalId))
-    || (signal.sentAt !== undefined && !isPositiveEpoch(signal.sentAt))
+    || !hasValidMembership(signal.member)
+    || !isPublicSignalId(signal.signalId)
+    || !isPositiveEpoch(signal.sentAt)
   ) return false;
 
   if (signal.type === "hello") {
@@ -123,7 +150,10 @@ export function isSignalMessage(value: unknown): value is SignalMessage {
 
   if (signal.type === "rejected") {
     return hasValidTarget(signal)
-      && signal.reason === SIGNAL_REJECTION_REASON.roomFull;
+      && (
+        signal.reason === SIGNAL_REJECTION_REASON.roomFull
+        || signal.reason === SIGNAL_REJECTION_REASON.memberLocked
+      );
   }
 
   if (signal.type !== "offer" && signal.type !== "answer" && signal.type !== "candidate") {

@@ -3,7 +3,6 @@ import { useState } from "react";
 import type { TwoOnlyChatController } from "@/src/chat/useTwoOnlyChat";
 import { ChatHeader } from "@/src/ui/ChatHeader";
 import { ChatSidebar } from "@/src/ui/ChatSidebar";
-import { ConnectionDiagnosticsPanel } from "@/src/ui/ConnectionDiagnosticsPanel";
 import { MessageComposer } from "@/src/ui/MessageComposer";
 import { MessageList } from "@/src/ui/MessageList";
 import { RoomSettingsDialog } from "@/src/ui/RoomSettingsDialog";
@@ -39,15 +38,16 @@ export function ChatScreen(props: TwoOnlyChatController) {
           onEditRoom={setEditingRoomId}
           onProfileChange={props.updateProfile}
         />
-        <ConnectionDiagnosticsPanel diagnostics={props.diagnostics} />
         <MessageList
           profile={props.profile}
+          peerProfile={props.peerProfile}
           connection={props.connection}
           messages={props.messages}
           copied={props.copied}
           onCopyInvite={props.copyInvite}
           onReconnect={props.reconnect}
           onDeleteMessage={props.deleteLocalMessage}
+          onReplyMessage={props.replyToMessage}
         />
         {props.notice ? (
           <div className="notice" role="status">
@@ -58,8 +58,10 @@ export function ChatScreen(props: TwoOnlyChatController) {
         <MessageComposer
           connection={props.connection}
           draft={props.draft}
+          replyingTo={props.replyingTo}
           isRecording={props.isRecording}
           onDraftChange={props.setDraft}
+          onCancelReply={props.cancelReply}
           onSubmit={props.submitText}
           onChooseImage={props.chooseImage}
           onChooseFile={props.chooseFile}

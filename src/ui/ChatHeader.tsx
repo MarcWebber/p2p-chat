@@ -46,7 +46,7 @@ function ProfileEditor({
         <legend>头像</legend>
         <AvatarUploader value={avatar} fallback="🙂" title="裁切个人头像" onChange={setAvatar} />
       </fieldset>
-      <small>头像会裁成 200 × 200 并保存在本机 IndexedDB；发消息时会加密展示给对方。</small>
+      <small>头像会裁成 200 × 200 并保存在本机；修改后会加密同步，双方历史消息里的头像和昵称也会一起更新。</small>
       <button type="submit">保存</button>
     </form>
   );

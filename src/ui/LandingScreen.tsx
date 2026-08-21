@@ -38,8 +38,8 @@ export function LandingScreen({
         <section className="wiki-card" aria-labelledby="wiki-title">
           <div className="wiki-heading"><span>使用说明</span><strong id="wiki-title">快速开始 Wiki</strong></div>
           <ol className="wiki-steps">
-            <li><b>创建聊天</b><span>点击左侧按钮，生成一条双方通用的双人邀请链接。</span></li>
-            <li><b>分享完整链接</b><span>把同一链接发给另一人，链接末尾密钥不能遗漏。</span></li>
+            <li><b>创建聊天</b><span>点击左侧按钮，生成一个只认最初两位成员的房间。</span></li>
+            <li><b>分享完整链接</b><span>首次成功加入的人会占据第二个席位，之后不能换人。</span></li>
             <li><b>等待安全连接</b><span>状态变绿后即可发送文字、图片、语音和 Beta 文件，也可直接粘贴剪贴板内容。</span></li>
           </ol>
           <details open>
@@ -52,7 +52,7 @@ export function LandingScreen({
           </details>
           <details>
             <summary>使用时要注意什么？</summary>
-            <p>只通过可信渠道分享完整链接，并与对方核对聊天页顶部的安全码。</p>
+            <p>只通过可信渠道分享完整链接，并与对方核对安全码；清除站点数据会同时丢失本机成员凭证。</p>
           </details>
         </section>
       </div>

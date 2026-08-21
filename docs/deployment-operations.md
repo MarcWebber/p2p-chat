@@ -99,10 +99,10 @@ channel
 
 - `persistSession: false`：项目不使用 Supabase Auth，不在本地维护登录会话。
 - `ack: true`：要求 Realtime 服务确认已接收 Broadcast。
-- 订阅成功后两个页面才开始发送 protocol v2 `hello`，避免信令通道尚未就绪时丢失对端发现消息。
+- 订阅成功后两个页面才开始发送 protocol v3 `hello`，避免信令通道尚未就绪时丢失对端发现消息。所有信令都带房间专属 P-256 成员签名，签名上下文同时包含 Room ID 和 Room Secret。
 - 房间凭证被移除、替换或页面卸载时调用 `removeChannel`；仅切换当前界面不会释放其他房间连接。
 
-官方文档说明：客户端订阅后，Broadcast 通过 WebSocket 发送；公共频道允许未登录客户端订阅。参见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast) 与 [Realtime Concepts](https://supabase.com/docs/guides/realtime/concepts)。这也是当前 MVP 快速建连和严格身份控制之间的主要取舍。
+官方文档说明：客户端订阅后，Broadcast 通过 WebSocket 发送；公共频道允许未登录客户端订阅。参见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast) 与 [Realtime Concepts](https://supabase.com/docs/guides/realtime/concepts)。成员签名会在信令进入 WebRTC 协商前拒绝陌生公钥，但公共频道仍会暴露建连元数据，也不能阻止垃圾流量或拒绝服务。
 
 ### 任一信令配置缺失时
 
@@ -191,12 +191,13 @@ npm run build
 4. 1.5 MB 内图片与录音，以及一张超过 1.5 MB 的流式图片；
 5. 文本复制/粘贴、剪贴板图片粘贴，以及带 Beta 标识的文件传输；
 6. 刷新后从本地密文恢复常规消息，并确认大附件明确标记为仅当前页面；
-7. 已连接的两个页面都保持 peer lock，第三个页面收到 `rejected(room-full)`；
-8. 新建会话后旧身份锁、消息和连接状态被清理；
+7. 第二个浏览器首次加入后，两个页面都持久保存成员席位；第三个浏览器收到 `rejected(member-locked)`；
+8. 原成员断线、关闭页面或等待超过 PeerLock 超时后仍能重连，第三个浏览器仍不能接替；
 9. 清空历史只影响当前设备；
-10. 浏览器 Console 无错误；
-11. `/api/signal` 显示 `configured:true`，Vercel Function 与 Redis 无异常日志。
-12. 分别阻断 Supabase 和 `/api/signal`，确认任意一条信令仍能完成握手。
+10. 修改昵称或头像后，对端既有消息立即显示最新资料，刷新后仍保留；
+11. 浏览器 Console 无错误；
+12. `/api/signal` 显示 `configured:true`，Vercel Function 与 Redis 无异常日志；
+13. 分别阻断 Supabase 和 `/api/signal`，确认任意一条信令仍能完成握手。
 
 ## 9. 依赖与变更注意事项
 

@@ -127,7 +127,7 @@ curl https://twoonly-chat.vercel.app/api/signal
 | DataChannel 建立后 Supabase 中断 | 聊天继续；不恢复无意义轮询 |
 | DataChannel 断开且 Supabase 仍不可达 | HTTPS 轮询恢复并完成新一轮协商 |
 | 同一信令从两条通道到达 | 只进入 `WebRtcSession` 一次 |
-| 第三个页面加入 | 现有 peer lock 仍拒绝第三个参与者 |
+| 第三个成员加入 | protocol v3 验签后发现公钥不属于两席，返回 `member-locked`；空房或断线也不转让席位 |
 
 最关键的单通道验收方式是在两端浏览器阻断 Supabase 域名，但保留 TwoOnly Vercel 域名，然后重新进入同一房间。双方应出现 `signal.route.degraded`、`hello.received`、Offer/Answer、ICE 和 `data.open`。
 

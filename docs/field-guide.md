@@ -49,9 +49,9 @@ flowchart LR
 
 WebRTC 官方入门也把信令定义为应用自己提供的异步交换通道，并建议使用 Trickle ICE 边收集边发送 Candidate，以缩短建连时间：[Peer connections](https://webrtc.org/getting-started/peer-connections)。
 
-## 信令：先让两个陌生浏览器互相介绍
+## 信令：先让两位房间成员互相介绍
 
-TwoOnly v2 不再给用户分配固定房主/访客角色。每次页面加载都会生成随机 `participantId`，双方订阅信令后都广播 Hello；两端用同一条确定性规则选出本轮临时 Offer 发起方。完整顺序如下：
+TwoOnly v3 不给用户分配长期房主/访客权限，但会为每个房间保存两把 P-256 成员公钥。每次页面加载仍生成随机 `participantId`；双方订阅信令后广播带成员签名的 Hello，先完成持久成员准入，再用同一条确定性规则选出本轮临时 Offer 发起方。完整顺序如下：
 
 ```mermaid
 sequenceDiagram
@@ -61,26 +61,28 @@ sequenceDiagram
   participant B as 浏览器 B
   participant I as STUN / TURN
 
-  A->>S: hello(protocol=2, A, epochA)
-  B->>S: hello(protocol=2, B, epochB)
+  A->>S: hello(protocol=3, A, epochA, member signature)
+  B->>S: hello(protocol=3, B, epochB, member signature)
   S-->>A: B 的 hello
   S-->>B: A 的 hello
-  A->>A: 锁定 B；比较 participantId
-  B->>B: 锁定 A；得到同一选举结果
+  A->>A: 验签并原子登记 B 的成员公钥
+  B->>B: 验签并确认 A 是邀请中的 owner
+  A->>A: PeerLock 锁定 B 页面；比较 participantId
+  B->>B: PeerLock 锁定 A 页面；得到同一选举结果
   Note over A,B: 较小 ID 临时负责 Offer 与 DataChannel
   A->>A: 创建 PeerConnection 和 DataChannel
   A->>A: createOffer + setLocalDescription
-  A->>S: offer(epoch pair, negotiationId)
+  A->>S: signed offer(epoch pair, negotiationId)
   S->>B: 转发 offer
   B->>B: setRemoteDescription
   B->>B: createAnswer + setLocalDescription
-  B->>S: answer(epoch pair, negotiationId)
+  B->>S: signed answer(epoch pair, negotiationId)
   S->>A: 转发 answer
   A->>A: setRemoteDescription
   A->>I: 收集 host / srflx / relay
   B->>I: 收集 host / srflx / relay
-  A-->>S: candidate(epoch pair, negotiationId)
-  B-->>S: candidate(epoch pair, negotiationId)
+  A-->>S: signed candidate(epoch pair, negotiationId)
+  B-->>S: signed candidate(epoch pair, negotiationId)
   S-->>B: 对端 candidate
   S-->>A: 对端 candidate
   A<<->>B: Connectivity Checks
@@ -92,7 +94,8 @@ sequenceDiagram
 - `setLocalDescription()` 和 `setRemoteDescription()` 的顺序不能乱；
 - Candidate 可能比远端 SDP 更早到，所以 TwoOnly 会按参与者、双方 epoch 与 `negotiationId` 放进对应的 `pendingIce` 分桶；
 - 每次协商带一个新的 `negotiationId`，本端每次重连递增 local epoch，因此旧 Answer 和旧 Candidate 不会污染新连接；
-- v2 信令携带明确的协议版本；格式不匹配的旧信令不会进入当前状态机；
+- v3 信令携带明确的协议版本和每房间 P-256 ECDSA 签名；签名同时绑定 Room ID、Room Secret 与稳定信令内容，只知道公开 Room ID 的人不能抢占成员席位；
+- 创建端用一个 IndexedDB 读写事务登记首个有效接收者，此后陌生公钥在进入 PeerLock 和 SDP 协商前就会被拒绝；
 - `participantId` 较小的一端只是本轮临时 Offer 发起方，不拥有更多权限；
 - 所有信令串进同一条 Promise 队列，避免两个异步分支同时修改 `signalingState`；
 - 重复 Offer 不一定是错误，网络重试时可以重发已经生成的 Answer。
@@ -197,13 +200,13 @@ sequenceDiagram
 邀请链接长这样：
 
 ```text
-https://站点/?room=<roomId>#<secret>
+https://站点/?room=<roomId>#secret=<secret>&owner=<ownerPublicKey>
 ```
 
 - `roomId` 用来选择 Supabase topic；
-- `secret` 放在 URL Fragment，也就是 `#` 后面。
+- `secret` 和创建者公钥 `owner` 放在 URL Fragment，也就是 `#` 后面。
 
-解析器只读取 `room` 和 fragment 中的 `secret`；多余的 `role` 参数不会进入当前状态。新复制的链接没有角色，两个人打开的是同一种 URL。
+解析器只读取 `room` 和 fragment 中的 `secret`、`owner`；多余的 `role` 参数不会进入当前状态。`owner` 是首次准入的信任锚，不是聊天 UI 里的长期权限角色。没有本机旧房间记录的新浏览器会拒绝缺少 `owner` 的旧式链接，避免后来者复用一个已经存在过的房间。
 
 Fragment 不会作为 HTTP 请求的一部分发给 Vercel。浏览器取到 `secret` 后计算 SHA-256，再把结果导入为不可导出的 AES-GCM 密钥。之所以可以直接哈希，是因为这里的 secret 本身是约 256 位随机值；如果换成用户口令，就必须使用专门的口令派生算法，而不能照搬。
 
@@ -211,28 +214,28 @@ Fragment 不会作为 HTTP 请求的一部分发给 Vercel。浏览器取到 `se
 
 ## “只允许两个人”到底保证到了哪一层
 
-TwoOnly 的双人限制很实用，但要准确描述：
+TwoOnly 的双人限制现在分成持久成员和临时页面两层：
 
-1. 每个页面加载时生成新的随机 `participantId`；
-2. 双方定时发送 protocol v2 `hello(participantId, epoch)`；
-3. 双方各自把第一个可用对端记为 `peerId`，并用 ID 字符串顺序选出临时 Offer 发起方；
-4. DataChannel 已打开的双人会话会向第三个页面发送 `rejected(room-full)`，不会因锁超时让位；
-5. 本端重连递增 local epoch，对端以 remote epoch 识别新旧页面轮次；通道未打开，且旧 Peer 已失败/关闭或连续 10 秒没有旧 peer 信令时，新的页面实例才可接替。
+1. 创建房间时生成创建者的房间专属 P-256 密钥，并把公钥放入邀请 Fragment；
+2. 第二个浏览器生成自己的房间专属密钥，用同时绑定 Room Secret 的签名证明自己拿到了完整邀请；
+3. 创建端用 IndexedDB 单个读写事务把首个有效接收者公钥写入第二席位；
+4. 两席确认后，所有 Hello、Offer、Answer、Candidate 和 Rejected 都必须由原成员私钥签名，陌生公钥收到 `rejected(member-locked)`；
+5. 页面级 `participantId`、epoch 与 PeerLock 只负责原成员的标签页实例和重连轮次。旧页面超时后同一成员的新页面可以接替，但席位不会换成一把新公钥。
 
 ```mermaid
 flowchart TD
-  HELLO["任一端收到 hello"] --> LOCK{"本端已有可用 peerId?"}
-  LOCK -->|"没有"| ACCEPT["锁定对端并完成确定性选举"]
-  LOCK -->|"同一 participant + 新 epoch"| RESUME["关闭旧 Peer，进入新轮次"]
-  LOCK -->|"另一 participant + 已打开通道或锁仍有效"| REJECT["发送 rejected(room-full)"]
-  LOCK -->|"另一 participant + 通道未开 + 旧 Peer 失效"| REPLACE["替换旧 peer lock"]
-  ACCEPT --> ELECT{"本端 ID 更小?"}
-  REPLACE --> ELECT
+  HELLO["收到带成员签名的 hello"] --> MEMBER{"公钥属于两席?"}
+  MEMBER -->|"首位有效接收者"| CLAIM["IndexedDB 原子登记第二席"]
+  MEMBER -->|"陌生公钥"| REJECT["发送 rejected(member-locked)"]
+  MEMBER -->|"原成员"| LOCK{"PeerLock 页面实例可接受?"}
+  CLAIM --> LOCK
+  LOCK -->|"当前实例或合法接替"| ELECT{"本端 participantId 更小?"}
+  LOCK -->|"另一实例且旧锁仍有效"| BUSY["发送 rejected(room-full)"]
   ELECT -->|"是"| OFFER["本端创建 Offer / DataChannel"]
   ELECT -->|"否"| ANSWER["等待并处理 Offer"]
 ```
 
-这叫**双方运行时 peer lock**，不叫严格身份认证。锁只存在于页面内存；页面全部关闭后，服务端没有持久席位。拿到完整邀请链接的人也同时拿到了 roomId 和 secret，仍可能抢先占位。正式产品若真的要求“只认这两台设备”，还需要一次性邀请核销、设备公钥、签名握手和持久化授权。
+成员席位保存在双方 IndexedDB，而不是服务器账号系统。页面全部关闭、锁屏、断线或 PeerLock 超时都不会把席位转让给后来者；只有持有原房间私钥的浏览器能重新进入。代价同样明确：清理站点数据、删除房间或换设备会丢失本机私钥，旧邀请不能找回已锁定席位。本项目不读取 MAC、deviceId 或浏览器指纹，也没有跨设备身份恢复。第二席位首次确认前，完整邀请泄露者仍可能抢先占位；若要消除这个窗口，需要服务端一次性邀请核销。
 
 ## 断线重连：项目里最容易被低估的一段
 

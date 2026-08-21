@@ -4,8 +4,12 @@ type AvatarContentProps = {
   alt: string;
 };
 
+export function isImageAvatar(value?: string) {
+  return Boolean(value?.startsWith("data:image/"));
+}
+
 export function AvatarContent({ value, fallback, alt }: AvatarContentProps) {
-  if (value?.startsWith("data:image/")) {
+  if (isImageAvatar(value)) {
     return <img className="avatar-image" src={value} alt={alt} />;
   }
   return <span className="avatar-fallback" aria-hidden>{value || fallback}</span>;
