@@ -21,6 +21,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 - [TURN 配置手册](turn-configuration.md)：托管服务和 Coturn 自建方式、端口、证书、Vercel 环境变量与验收。
 - [常见问题与网络排障 FAQ](faq.md)：TURN 可达性、两端状态不一致、重连、国内网络和常见产品边界。
 - [Supabase + Vercel HTTPS 双活信令](signaling-resilience.md)：两条信令、Redis Stream、去重和验收矩阵。
+- [事件唤醒信令与浏览器唯一性 RFC](wake-driven-signaling-rfc.md)：提案文档，拆解按事件唤醒、浏览器安装 ID、多标签页单网络负责人、Redis 冷备和容量预算；尚未实现。
 - [Supabase、Vercel 与部署运维](deployment-operations.md)：环境变量、Supabase 配置、Vercel 部署、测试和国内访问方案。
 
 ## 一张图看懂
