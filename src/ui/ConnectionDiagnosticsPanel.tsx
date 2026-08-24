@@ -25,7 +25,7 @@ const STAGE_STATUS_LABELS: Record<StageStatus, string> = {
 const STAGES: Array<{ stage: DiagnosticStage; label: string }> = [
   { stage: "credentials", label: "凭据" },
   { stage: "signal", label: "信令" },
-  { stage: "hello", label: "Hello" },
+  { stage: "hello", label: "Wake" },
   { stage: "sdp", label: "SDP" },
   { stage: "ice", label: "ICE" },
   { stage: "data", label: "通道" },
@@ -105,7 +105,7 @@ export function ConnectionDiagnosticsPanel({ diagnostics }: ConnectionDiagnostic
           ))}
         </div>
         <p className="diagnostics-expectation">
-          期望：凭据就绪 → 至少一条信令可用 → 双方 Hello → 选举临时发起方 → Offer/Answer → ICE connected → DataChannel open
+          期望：凭据就绪 → 主信令可用 → Wake/ACK → 选举临时发起方 → Offer/Answer → ICE connected → DataChannel open
         </p>
         <div className="diagnostics-actions">
           <span>Trace {diagnostics.traceId} · 日志已脱敏，仅保存在本页内存</span>

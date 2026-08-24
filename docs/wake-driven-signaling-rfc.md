@@ -1,12 +1,12 @@
 # RFC：事件唤醒信令与浏览器唯一性
 
-> 状态：**Proposed / 尚未实现**
+> 状态：**Core implemented / 核心路径已实现（2026-08-24）**
 >
-> 文档版本：1.0
+> 文档版本：1.1
 >
 > 目标协议版本：v4
 >
-> 本次变更范围：仅设计文档与 PNG 架构图，不修改产品代码、线上配置或部署行为。
+> 已落地：v4 Wake/ACK、有界 `0/1/3/7s` 重试、持久化序号、浏览器安装 ID、单标签页网络租约、共享 Supabase client、Supabase 主通道与有界 Redis 冷备。服务端 Bridge、服务端多级限流和配额熔断仍是后续防滥用项。
 
 ## 1. 摘要
 
@@ -44,7 +44,7 @@ TwoOnly 当前在 WebRTC 尚未连通时，会按固定周期发送 Supabase Hel
 
 ### 2.1 当前成本按时间增长
 
-当前代码中的关键周期是：
+v3 代码中的关键周期是（v4 已移除）：
 
 | 路径 | 当前周期 | 位置 |
 | --- | ---: | --- |
@@ -92,7 +92,7 @@ TwoOnly 当前在 WebRTC 尚未连通时，会按固定周期发送 Supabase Hel
 - 不把浏览器安装 ID 当作房间成员身份或授权凭据。
 - 不提供离线信箱；聊天正文仍不进入 Supabase 或 Redis。
 - 不承诺网页在操作系统深度休眠、锁屏冻结或浏览器被杀死时仍能接收事件。
-- 不在本 RFC 中直接修改代码、数据库版本、Vercel 或 Supabase 配置。
+- 不提供服务端离线信箱或锁屏期间的后台执行能力。
 
 ## 4. 三个容易混淆的“编号”
 
@@ -240,7 +240,7 @@ Supabase 官方说明一个客户端连接可以订阅多个 channel，因此共
 
 ### 7.2 建议载荷
 
-下面是概念字段，不代表本 RFC 已经提交线协议实现：
+下面是 v4 已实现的核心线协议字段；房间路由由 Supabase channel 或同源 HTTPS 请求承担：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -430,8 +430,8 @@ Supabase 当前对大多数计划允许一个连接加入最多 100 个 channel�
 | --- | --- | --- |
 | `settings` | `browser-installation` | 原子创建的安装 ID |
 | `settings` | `network-owner-lease` | `ownerTabId + fence + expiresAt` |
-| `rooms` | `localWakeSeq` | 本成员下一次唤醒序号 |
-| `rooms` | `peerLastSeenWakeSeq` | 已处理的对端最新序号 |
+| `settings` | `wake-sequence:<roomId>` | 本成员下一次唤醒序号 |
+| `settings` | `peer-wake:<roomId>` | 已处理的对端成员与最新序号 |
 | 内存 | `tabId` | 页面级，不持久化 |
 | 内存 | active Wake timers | 收 ACK、丢租约或 dispose 时取消 |
 
@@ -484,23 +484,17 @@ Supabase 当前对大多数计划允许一个连接加入最多 100 个 channel�
 
 ## 15. v3 到 v4 的迁移
 
-1. v4 客户端先加入安装 ID 和本地租约，但保持现有 v3 信令行为，由 feature flag 关闭事件唤醒。
-2. 验证单标签、多标签、冻结恢复和 IndexedDB 失败场景。
-3. 增加 v4 Wake/ACK，接收端按 `protocolVersion` 分流。
-4. 在一段兼容窗口内，v4 遇到 v3 对端可回退到有界 v3 Hello，但必须设置总时限，不能恢复永久轮询。
-5. 两端均为 v4 后，关闭固定 Hello 和健康状态下的 Redis poll。
-6. 最后把 Redis Stream 迁移为最新 Wake 状态，并保留可回滚开关。
-
-旧房间的永久双席公钥不变。浏览器安装 ID 的新增不能重置或替换成员身份。
+本次发布采用线协议硬切换：v4 不再发送固定 Hello，旧的 v3 标签页需要刷新后才能与 v4 对端重新握手。旧房间的秘密、永久双席公钥、消息密文和本地资料都不变；浏览器安装 ID 也不会重置或替换成员身份。
 
 ## 16. 建议实施切片
 
 | 阶段 | 主要改动 | 独立验收 |
 | --- | --- | --- |
-| A. 浏览器唯一性 | IndexedDB 原子安装 ID、租约、fence、跟随者 UI | 三标签页始终只有一个网络负责人 |
-| B. 共享连接 | 单 Supabase client、多 channel、运行时归属迁移 | 多房间只占一个 WebSocket |
-| C. Wake 协议 | v4 payload、持久化序号、ACK、0/1/3/7 调度 | 快速重连且重试有界 |
-| D. Redis 冷备 | provider 故障判定、最新状态、批量检查、429 | Supabase 健康时 Redis 为 0 |
+| A. 浏览器唯一性（已实现） | IndexedDB 原子安装 ID、租约、fence、跟随者 UI | 三标签页始终只有一个网络负责人 |
+| B. 共享连接（已实现） | 单 Supabase client、多 channel、运行时归属迁移 | 多房间只占一个 WebSocket |
+| C. Wake 协议（已实现） | v4 payload、持久化序号、ACK、0/1/3/7 调度 | 快速重连且重试有界 |
+| D. Redis 冷备（客户端已实现） | provider 故障判定、有界读取窗口 | Supabase 健康时 Redis 为 0 |
+| D2. 服务端防滥用（待实现） | Bridge、最新状态、429、多级限流与配额熔断 | 篡改客户端也不能耗尽免费额度 |
 | E. 观测与发布 | metrics、配额告警、feature flag、兼容回退 | 小流量验证后逐步放量 |
 
 预计会涉及的现有模块：

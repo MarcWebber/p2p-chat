@@ -115,13 +115,13 @@ https://站点/?room=<roomId>#secret=<secret>&owner=<ownerPublicKey>
 
 ## 4. “只允许两个人”的实现
 
-每个页面实例生成随机 `participantId`，并在 Supabase 或 HTTPS 至少一条信令可用后周期性广播 Signal protocol v3 `hello`。Hello、Offer、Answer、Candidate 和 Rejected 都携带成员公钥、由公钥派生的 `memberId`，以及对房间 ID、会话秘密与稳定信令内容所作的 P-256 ECDSA 签名；无法验签的信令在进入 PeerLock 和 WebRTC 状态机前即被忽略。同一信令还携带 `signalId` 并发送到所有通道，重复到达时在进入状态机前丢弃。
+每个网络负责人为房间运行时生成随机 `participantId`，并在信令就绪或需要重连时发送 Signal protocol v4 `wake`。每个持久化递增的 `wakeSeq` 只在 `0 / 1 / 3 / 7` 秒尝试，收到 `wake-ack` 后立即停止。Wake、ACK、Offer、Answer、Candidate 和 Rejected 都携带成员公钥、由公钥派生的 `memberId`，以及对房间 ID、会话秘密与稳定信令内容所作的 P-256 ECDSA 签名；无法验签的信令在进入 PeerLock 和 WebRTC 状态机前即被忽略。
 
 创建者在收到首个有效但尚未登记的成员信令时，以 IndexedDB 单个读写事务原子确认第二席位；之后两个端点各自保存自己的私钥材料和对端公钥。后续只有这两把成员公钥签出的信令能进入协商。双方再通过页面级 `participantId` 字符串比较得到一致结论：较小 ID 是本轮临时 Offer 发起方，同时创建 DataChannel；另一端处理 Offer 并返回 Answer。连接打开后，两端能力完全相同，`owner` 只承担初次邀请的信任锚，不形成长期 UI 权限角色。
 
 信令同时携带 `fromEpoch`、面向对端的 `toEpoch` 和每轮随机 `negotiationId`。本端重连时递增 local epoch；收到对方更大的 remote epoch 时关闭旧 Peer 并进入新轮次。Answer 和 Candidate 必须同时命中参与者、双方 epoch 与 negotiation ID；远端描述尚未就绪时，Candidate 也按这组键分桶缓存，避免旧轮次污染新连接。
 
-第三个成员广播 Hello 时，已锁定房间会在验签后发现其公钥不属于两个席位，并回复签名的 `rejected(member-locked)`。断线、空房、页面关闭或 PeerLock 超时都不会转让成员席位；原来的两个成员仍可凭 IndexedDB 中的房间私钥重新进入。
+第三个成员发送 Wake 时，已锁定房间会在验签后发现其公钥不属于两个席位，并回复签名的 `rejected(member-locked)`。断线、空房、页面关闭或 PeerLock 超时都不会转让成员席位；原来的两个成员仍可凭 IndexedDB 中的房间私钥重新进入。
 
 `PeerLock` 仍然存在，但只处理同一合法成员可能同时出现的页面实例、epoch 和协商轮次。旧页面失败或超时后，新页面实例可以接替连接；Membership 不会因此接受一把新公钥。
 
@@ -138,9 +138,9 @@ https://站点/?room=<roomId>#secret=<secret>&owner=<ownerPublicKey>
 
 每个房间的连接状态都是 `waiting → connecting → connected`，失败或关闭后进入 `disconnected`。聊天控制器按 `roomId` 保存一组 `RoomRuntime`；每个运行时独立持有随机页面级 `participantId`、房间成员身份、消息加密器、信令传输、`WebRtcSession`、消息和诊断状态。IndexedDB 的 `rooms` object store 继续以 `roomId` 为唯一键，保存会话秘密、成员密钥与对端公钥，但不生成或保存 MAC、deviceId 或浏览器指纹。
 
-页面启动时会为全部已保存房间创建运行时。侧栏切换只更新当前展示的 `activeRoomId`、URL 和输入状态，不销毁其他房间的 PeerConnection、DataChannel 或信令订阅；只有房间凭证被替换、房间被移除或页面卸载时才释放对应运行时。因此一台机器可以同时维持多个彼此独立的双人房间；每个房间先由持久 Membership 限定两把成员公钥，再由 `PeerLock` 限制当前连接到一个合法对端页面实例。
+页面启动时先在 IndexedDB 原子读取安装 ID，并用 5 秒续租、15 秒过期的 fence 租约选出同一浏览器唯一网络负责人。只有负责人会为全部已保存房间创建运行时；多个房间共享一个 Supabase client。侧栏切换只更新当前展示，不销毁其他房间的 PeerConnection、DataChannel 或订阅。
 
-`WebRtcSession` 现在使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期，而不是让十几个布尔值互相组合。实例创建后已经具备发现能力，信令就绪才启动 Hello 定时器，因此不再保留没有独立行为的 `idle` 和空 `start()`。持久成员公钥先完成准入；同一成员的页面实例收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`，三个定时器统一放在 `Timers` 中；重连时通过一个入口清理 Peer、协商和 Candidate 缓存，但不清除持久 Membership。PeerConnection、DataChannel 与异步 SDP 回调仍会检查自己是否属于当前协商，避免旧实例污染新房间。
+`WebRtcSession` 使用单一 `phase`（discovering / negotiating / connected / full / disposed）表达主生命周期。信令就绪才启动一次有界 Wake campaign；收到 ACK、建立 DataChannel、失去网络租约或 dispose 时都会取消剩余任务。持久成员公钥先完成准入；同一成员的页面实例收敛为一条 `PeerLock`，本轮 Offer/Answer 收敛为一条 `Negotiation`。重连时清理 Peer、协商和 Candidate 缓存，但不清除持久 Membership。
 
 诊断日志统一经过 `trace(stage, code, message, options)`，连接状态和用户提示统一经过 `show(...)`。这两个入口保留了完整排障证据链，但删除了散落在主流程里的重复日志对象。Candidate 解析和最终 Candidate Pair 统计移到纯函数模块 `rtcStats.ts`，不再挤占会话状态机。
 
@@ -274,4 +274,4 @@ flowchart TD
 - WebRTC 只传输 `EncryptedWire`，不持有 AES 密钥或明文消息；
 - Storage 只保存密文信封，不自行加解密；
 - Crypto 的密钥实例绑定单个房间秘密，不能跨房间复用；
-- 当前 Signal protocol v3 要求每条 Hello、Offer、Answer、Candidate 和 Rejected 都带每房间 P-256 ECDSA 成员签名；`participantId`、epoch 与 negotiation ID 继续只负责页面实例和协商轮次，不能替代持久 Membership。
+- 当前 Signal protocol v4 要求每条 Wake、Wake ACK、Offer、Answer、Candidate 和 Rejected 都带每房间 P-256 ECDSA 成员签名；`wakeSeq` 负责唤醒幂等，`participantId`、epoch 与 negotiation ID 只负责页面实例和协商轮次，不能替代持久 Membership。

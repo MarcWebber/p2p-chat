@@ -19,11 +19,17 @@ type SignalBase = {
   sentAt: number;
 };
 
-export type HelloSignal = SignalBase & {
-  type: "hello";
-  to?: string;
-  toEpoch?: number;
+export type WakeSignal = SignalBase & {
+  type: "wake";
+  wakeSeq: number;
   restart?: boolean;
+};
+
+export type WakeAckSignal = SignalBase & {
+  type: "wake-ack";
+  to: string;
+  toEpoch: number;
+  wakeSeq: number;
 };
 
 type NegotiationSignalBase = SignalBase & {
@@ -55,7 +61,8 @@ type RejectedSignal = SignalBase & {
 };
 
 export type SignalMessage =
-  | HelloSignal
+  | WakeSignal
+  | WakeAckSignal
   | OfferSignal
   | AnswerSignal
   | CandidateSignal
@@ -142,10 +149,13 @@ export function isSignalMessage(value: unknown): value is SignalMessage {
     || !isPositiveEpoch(signal.sentAt)
   ) return false;
 
-  if (signal.type === "hello") {
-    const validRoute = (signal.to === undefined && signal.toEpoch === undefined)
-      || hasValidTarget(signal);
-    return validRoute && (signal.restart === undefined || typeof signal.restart === "boolean");
+  if (signal.type === "wake") {
+    return isPositiveEpoch(signal.wakeSeq)
+      && (signal.restart === undefined || typeof signal.restart === "boolean");
+  }
+
+  if (signal.type === "wake-ack") {
+    return hasValidTarget(signal) && isPositiveEpoch(signal.wakeSeq);
   }
 
   if (signal.type === "rejected") {
@@ -186,6 +196,8 @@ export type SignalProvider = {
   name: SignalProviderName;
   start: () => void;
   send: (message: RoutedSignalMessage) => void;
+  receiveBridge?: (value: unknown) => void;
   setNegotiationActive?: (active: boolean) => void;
+  setPublishOnlyActive?: (active: boolean) => void;
   dispose: () => void;
 };

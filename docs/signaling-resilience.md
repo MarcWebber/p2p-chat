@@ -1,8 +1,8 @@
-# Supabase + Vercel HTTPS 双活信令
+# Supabase + Vercel HTTPS 主备信令
 
-TwoOnly 的聊天正文走 WebRTC DataChannel，但新的 PeerConnection 仍需要交换 Hello、Offer、Answer 和 ICE Candidate。TURN 只能中继已经完成协商的 WebRTC 流量，不能替代信令。因此，某一端无法访问 Supabase Realtime 时，仅仅显示“TURN 凭据正常”仍不足以完成建联。
+TwoOnly 的聊天正文走 WebRTC DataChannel，但新的 PeerConnection 仍需要交换 Wake、Offer、Answer 和 ICE Candidate。TURN 只能中继已经完成协商的 WebRTC 流量，不能替代信令。因此，某一端无法访问 Supabase Realtime 时，仅仅显示“TURN 凭据正常”仍不足以完成建联。
 
-当前实现同时启用低延迟的 Supabase WebSocket 与同源 `/api/signal` HTTPS 信令。只要用户能打开 Vercel 页面，通常也能访问同一域名下的 HTTPS 信令端点。
+当前实现以低延迟 Supabase WebSocket 为主路径。只有客户端明确观察到 Supabase 错误或超时，才短时启用同源 `/api/signal`；健康状态下不会访问 Redis。
 
 ## 1. 当前结论
 
@@ -11,7 +11,7 @@ TwoOnly 的聊天正文走 WebRTC DataChannel，但新的 PeerConnection 仍需�
 | WebSocket 路径 | Supabase Realtime Broadcast |
 | 同源 HTTPS 路径 | Vercel Route Handler `/api/signal` |
 | 共享短时队列 | Upstash Redis Stream，由 Vercel 服务端访问 |
-| 客户端策略 | 两条信令同时发送、同时接收，任意一条可用即可握手 |
+| 客户端策略 | Supabase 主用；HTTPS / Redis 只在明确故障时有界启用 |
 | 重复处理 | 每次发送生成 `signalId`，进入 WebRTC 状态机前去重 |
 | HTTPS 信令内容 | 使用邀请 fragment 派生的独立 AES-GCM 密钥加密 |
 | 队列边界 | 每房间约 128 条，最后一次写入 180 秒后过期 |
@@ -19,24 +19,24 @@ TwoOnly 的聊天正文走 WebRTC DataChannel，但新的 PeerConnection 仍需�
 
 这不是把应用或 Supabase 迁移到 Redis。Redis 只保存几分钟内用于建立 WebRTC 的临时密文事件。
 
-## 2. 为什么不是“失败后再切换”
+## 2. 单边故障如何避免主备错台
 
-假设 A 可以访问 Supabase，B 不可以。如果只有 B 检测错误后切换：
+假设 A 可以访问 Supabase，B 不可以。如果只让 B 写 Redis：
 
 - A 继续在 Supabase 等待；
 - B 改到 HTTPS 队列等待；
 - 两端分别连接成功，却永远收不到对方。
 
-因此双方从页面加载起就同时使用两条通道：
+v4 用一次短时桥接解决，不需要双方常驻 Redis：
 
-1. 同一条信令只生成一次 `signalId`；
-2. 原文发送到 Supabase；
-3. 同一信令加密后发送到 `/api/signal`；
-4. 任意通道收到后立即交给状态机；
-5. 另一通道稍后送达同一 `signalId` 时直接丢弃；
-6. 两条通道都不可用时，才显示信令不可用。
+1. B 把加密信令写入 `/api/signal`；
+2. Vercel 暂存 Redis 后，用 Supabase Broadcast REST 把同一密文事件桥接到房间 channel；
+3. A 通过健康 WebSocket 收到并在本地解密；
+4. A 只针对 B 的 30 秒 bridge window 把 ACK、Offer、Answer 或 Candidate 写回 HTTPS；
+5. B 在最多 7 次、约 25 秒的有界读取窗口中接收；
+6. Supabase 恢复、DataChannel 打开或窗口到期后停止。
 
-这样无论哪一端的 Supabase WebSocket 被阻断，双方仍然共同监听 Vercel HTTPS。
+这样 Supabase 健康的一端不需要轮询 Redis，同时保留单边故障下的共同返回路径。
 
 ## 3. Vercel HTTPS 端点
 
@@ -55,7 +55,7 @@ POST /api/signal
 
 Route Handler 会校验同源请求、Content-Type、请求大小、room/participant/signal ID 和 cursor。它不会接收 URL fragment，也无法解密 payload。Redis Stream 使用服务端生成的单调 cursor，客户端不依赖本机时间排序。
 
-为控制免费额度，HTTPS Hello 最多每五秒写入一次；连接协商期间约每 1.2 秒轮询。新页面只回放最近 15 秒的事件，避免刷新后把队列里旧的 Offer、Answer 和拒绝消息当成本轮协商。DataChannel 打开后立即停止 HTTPS 轮询，连接波动或主动重连时再恢复。
+v4 正常情况下只使用 Supabase；HTTPS / Redis 不启动。只有 Supabase 明确返回错误或超时后，客户端才进入一次最长约 25 秒、最多 7 次读取的降级窗口；Wake 本身只在 `0 / 1 / 3 / 7` 秒发送。Supabase 恢复或 DataChannel 打开后立即停止降级读取。
 
 ## 4. 配置 Upstash Redis
 
@@ -83,10 +83,10 @@ curl https://twoonly-chat.vercel.app/api/signal
 配置完成时应返回：
 
 ```json
-{"ok":true,"configured":true}
+{"ok":true,"configured":true,"bridgeConfigured":true}
 ```
 
-`configured:true` 只证明变量存在。真正可用还要看到浏览器日志中的 `signal.https.send.ack`，以及另一端通过 `https` provider 收到 Hello。
+`configured:true` 只证明 Redis 变量存在，`bridgeConfigured:true` 只证明 Supabase Bridge 变量存在。真正可用还要看到浏览器日志中的 `signal.https.send.ack`，以及另一端通过 `https` provider 收到 Wake。
 
 ## 5. 代码边界
 
@@ -127,7 +127,7 @@ curl https://twoonly-chat.vercel.app/api/signal
 | DataChannel 建立后 Supabase 中断 | 聊天继续；不恢复无意义轮询 |
 | DataChannel 断开且 Supabase 仍不可达 | HTTPS 轮询恢复并完成新一轮协商 |
 | 同一信令从两条通道到达 | 只进入 `WebRtcSession` 一次 |
-| 第三个成员加入 | protocol v3 验签后发现公钥不属于两席，返回 `member-locked`；空房或断线也不转让席位 |
+| 第三个成员加入 | protocol v4 验签后发现公钥不属于两席，返回 `member-locked`；空房或断线也不转让席位 |
 
 最关键的单通道验收方式是在两端浏览器阻断 Supabase 域名，但保留 TwoOnly Vercel 域名，然后重新进入同一房间。双方应出现 `signal.route.degraded`、`hello.received`、Offer/Answer、ICE 和 `data.open`。
 

@@ -6,6 +6,8 @@ import {
 } from "@/src/signal/httpsSignalProtocol";
 import {
   isHttpsSignalStoreConfigured,
+  broadcastHttpsSignal,
+  isHttpsSignalBridgeConfigured,
   pollHttpsSignals,
   publishHttpsSignal,
 } from "@/src/signal/serverSignalStore";
@@ -25,7 +27,11 @@ function responseHeaders(requestId: string, startedAt: number) {
 
 export function GET() {
   return Response.json(
-    { ok: true, configured: isHttpsSignalStoreConfigured() },
+    {
+      ok: true,
+      configured: isHttpsSignalStoreConfigured(),
+      bridgeConfigured: isHttpsSignalBridgeConfigured(),
+    },
     { headers: { "Cache-Control": "no-store, max-age=0" } },
   );
 }
@@ -57,9 +63,16 @@ export async function POST(request: Request) {
     }
     const body = JSON.parse(text) as unknown;
     if (isHttpsSignalPublishRequest(body)) {
-      const cursor = await publishHttpsSignal(body);
+      const { cursor, event } = await publishHttpsSignal(body);
+      let bridgeForwarded = false;
+      try {
+        bridgeForwarded = await broadcastHttpsSignal(body.roomId, event);
+      } catch (error: unknown) {
+        const errorName = error instanceof Error ? error.name : "UnknownError";
+        console.warn(`[twoonly:signal][${requestId}] Supabase bridge unavailable (${errorName})`);
+      }
       console.info(`[twoonly:signal][${requestId}] fallback publish accepted (${Date.now() - startedAt}ms)`);
-      return respond({ accepted: true, cursor, requestId });
+      return respond({ accepted: true, cursor, bridgeForwarded, requestId });
     }
     if (isHttpsSignalPollRequest(body)) {
       const result = await pollHttpsSignals(body.roomId, body.participantId, body.cursor);

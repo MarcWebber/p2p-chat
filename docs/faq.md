@@ -1,13 +1,13 @@
 # TwoOnly 常见问题与网络排障 FAQ
 
-这份 FAQ 按故障类型组织，不按问题出现的时间堆笔记。排障目标只有一个：确认连接停在网页、TURN 凭据、双活信令、ICE 选路还是 DataChannel，并让两端拿出能互相印证的日志。
+这份 FAQ 按故障类型组织，不按问题出现的时间堆笔记。排障目标只有一个：确认连接停在网页、TURN 凭据、主备信令、ICE 选路还是 DataChannel，并让两端拿出能互相印证的日志。
 
 ## 0. 先看总流程
 
 | 问题类型 | 典型症状 | 对应章节 |
 | --- | --- | --- |
 | 页面与凭据 | 页面打不开、凭据超时、接口 502/503 | [1. 页面与 TURN 凭据](#1-页面与-turn-凭据) |
-| 双活信令 | `websocket connection failed`、`signal.route.degraded/unavailable` | [2. 双活信令](#2-双活信令) |
+| 主备信令 | `websocket connection failed`、`signal.route.fallback/unavailable` | [2. 主备信令](#2-主备信令) |
 | ICE 与 TURN | 没有 relay、`ice.failed`、无法确认是否走中继 | [3. ICE 与 TURN](#3-ice-与-turn) |
 | 连接生命周期 | 两端状态不一致、反复自动重连、换网失败 | [4. 连接生命周期与网络差异](#4-连接生命周期与网络差异) |
 | 产品与安全边界 | 历史不同步、旧角色链接、第三人进入 | [5. 产品与安全边界](#5-产品与安全边界) |
@@ -53,21 +53,21 @@
 
 Vercel Route 会在响应头和正文中返回同一个脱敏 `requestId`。服务端日志格式是 `[twoonly:turn][requestId] ...`，可用它把浏览器请求和 Function 日志对应起来。
 
-## 2. 双活信令
+## 2. 主备信令
 
 ![图 2：双方对等建连的正常时序](assets/faq-02-peer-connection-sequence.png)
 
-图 2 中的参与者 A、B 完全对等。双方都发送 Hello；`participantId` 只用于选出本轮临时 Offer 发起方，不是长期身份，也不是权限角色。Supabase 与 Vercel HTTPS 从页面加载起同时工作，聊天正文不会进入两条信令。
+图 2 中的参与者 A、B 完全对等。双方在有意义的上线或重连事件中发送有界 Wake；`participantId` 只用于选出本轮临时 Offer 发起方，不是长期身份，也不是权限角色。Supabase 是主信令，Vercel HTTPS / Redis 只在 Supabase 明确失败时短时工作；聊天正文不会进入信令。
 
 ### 2.1 任意一方无法访问 Supabase，会发生什么？
 
-建连前，双方必须通过至少一条共同可达的信令交换 Hello、Offer、Answer 和 ICE Candidate。当前双方同时使用 Supabase Realtime 和同源 `/api/signal`：任意一方无法访问 Supabase 时，只要双方仍能访问 Vercel HTTPS，便可继续建立 PeerConnection。
+建连前，双方必须交换 Wake、Offer、Answer 和 ICE Candidate。任意一方无法访问 Supabase 时，其加密 Wake 会由同源 `/api/signal` 暂存并桥接到健康对端；针对该成员的 ACK 和协商信令在 30 秒窗口内通过 HTTPS 返回。
 
-已经出现 `data.open` 后，聊天正文走 WebRTC DataChannel，HTTPS 轮询会暂停；网络迁移或连接断开后，轮询重新启动并参与新一轮握手。
+已经出现 `data.open` 后，聊天正文走 WebRTC DataChannel，HTTPS 降级窗口立即关闭；网络迁移或连接断开后先走新的 Supabase Wake，只有 provider 明确失败才再次启用 HTTPS。
 
 项目仍不提供 `BroadcastChannel` 本地 fallback。缺少 Supabase 配置时记录 `signal.supabase.config.missing` 并尝试 HTTPS；缺少 Upstash 配置时 `/api/signal` 返回 503 并继续尝试 Supabase。只有两条都不可用才出现 `signal.route.unavailable`。
 
-这里不是单边故障后切换。双方始终双发双收，再按唯一 `signalId` 去重，避免一端留在 Supabase、另一端切到 HTTPS 的“信令分裂”。完整实现见 [Supabase + Vercel HTTPS 双活信令](signaling-resilience.md)。
+单边故障通过服务端把加密降级事件桥接到健康一端的 Supabase channel；健康端只针对该故障成员短时把回复写回 HTTPS，不需要常驻轮询。完整实现见 [Supabase + Vercel HTTPS 韧性信令](signaling-resilience.md)。
 
 ### 2.2 `websocket connection failed` 与 `transport failure` 是 TURN 报错吗？
 
@@ -216,7 +216,7 @@ URL fragment 中包含会话秘密和创建者公钥。fragment 通常不会随 
 
 ### 5.3 旧链接中的 `role=host` / `role=guest` 还有效吗？
 
-无效。当前解析器只读取 `room`，以及 fragment 中的 `secret`、创建者公钥 `owner`；多余的 `role` 参数即使仍出现在地址里也会被普通地忽略，不进入邀请、存储、消息方向或协商状态。双方都会发送带每房间 P-256 ECDSA 成员签名的 protocol v3 Hello，再由随机 `participantId` 选出本轮临时 Offer 发起方。旧版信令不符合当前结构时统一记录为 `signal.message.invalid`。
+无效。当前解析器只读取 `room`，以及 fragment 中的 `secret`、创建者公钥 `owner`；多余的 `role` 参数不会进入邀请、存储、消息方向或协商状态。双方发送带每房间 P-256 ECDSA 成员签名的 protocol v4 Wake，再由随机 `participantId` 选出本轮临时 Offer 发起方。旧版信令统一记录为 `signal.message.invalid`。
 
 旧式 `#<secret>` 链接仍可被解析，便于已有房间升级；但没有该房间 IndexedDB 记录的新浏览器会拒绝缺少 `owner` 的旧链接。旧记录没有历史成员凭据：仍保存该房间的端点会各自生成成员密钥，最先完成 v3 相互验签的两端被固化，系统无法证明它们就是最初两人。
 
@@ -252,10 +252,10 @@ URL fragment 中包含会话秘密和创建者公钥。fragment 通常不会随 
 ### 6.2 一份够用的验收清单
 
 - [ ] 参与者 A、B 使用两台真实设备和两个不同网络，打开同一条无角色邀请链接。
-- [ ] 双方都有 `signal.route.dual/degraded`、`hello.sent`、`hello.received` 和一致的 `peer.elected`。
+- [ ] 双方都有 `signal.route.primary`、`wake.sent`、`wake-ack.received` 和一致的 `peer.elected`。
 - [ ] 阻断 Supabase 后，双方仍能通过 HTTPS provider 完成新房间握手。
 - [ ] Offer/Answer 使用同一轮双方 epoch 与 negotiation ID。
-- [ ] Hello、Offer、Answer、Candidate 和 Rejected 都是 protocol v3，并能通过房间成员签名校验。
+- [ ] Wake、Wake ACK、Offer、Answer、Candidate 和 Rejected 都是 protocol v4，并能通过房间成员签名校验。
 - [ ] 陌生第三成员收到 `rejected(member-locked)`；原成员断线重连后仍可进入，已有席位不转让。
 - [ ] 清除第三个测试浏览器的站点数据后，旧链接不能让它冒充原成员重新进入。
 - [ ] 两端凭据接口都成功，且各自通过 Trickle ICE 得到 relay candidate。
@@ -272,7 +272,7 @@ URL fragment 中包含会话秘密和创建者公钥。fragment 通常不会随 
 - [TURN 配置手册](turn-configuration.md)
 - [WebRTC、双工通道与加密](webrtc-security.md)
 - [Supabase、Vercel 与部署运维](deployment-operations.md)
-- [Supabase + Vercel HTTPS 双活信令](signaling-resilience.md)
+- [Supabase + Vercel HTTPS 主备信令](signaling-resilience.md)
 - [TwoOnly 项目复盘](project-retrospective.md)
 - [Cloudflare TURN 短时凭据](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
 - [Cloudflare TURN Analytics](https://developers.cloudflare.com/realtime/turn/analytics/)

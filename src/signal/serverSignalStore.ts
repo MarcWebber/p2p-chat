@@ -36,6 +36,10 @@ export function isHttpsSignalStoreConfigured() {
   return Boolean(redis);
 }
 
+export function isHttpsSignalBridgeConfigured() {
+  return Boolean(signalFallback.supabaseUrl && signalFallback.supabaseKey);
+}
+
 export async function publishHttpsSignal(request: HttpsSignalPublishRequest) {
   const key = streamKey(request.roomId);
   const record: StoredSignal = {
@@ -54,7 +58,33 @@ export async function publishHttpsSignal(request: HttpsSignalPublishRequest) {
     .expire(key, SIGNAL_POLICY.httpsQueueTtlSeconds)
     .exec();
   if (!isSignalCursor(cursor)) throw new Error("signal store rejected publish");
-  return cursor;
+  return { cursor, event: { cursor, ...record } satisfies HttpsSignalEvent };
+}
+
+export async function broadcastHttpsSignal(roomId: string, event: HttpsSignalEvent) {
+  const { supabaseUrl, supabaseKey } = signalFallback;
+  if (!supabaseUrl || !supabaseKey) return false;
+  const response = await fetch(`${supabaseUrl.replace(/\/$/, "")}/realtime/v1/api/broadcast`, {
+    method: "POST",
+    headers: {
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messages: [{
+        topic: `${RESOURCE_NAMES.roomPrefix}${roomId}`,
+        event: SIGNAL_POLICY.realtimeBridgeEvent,
+        payload: event,
+        private: false,
+      }],
+    }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(3_000),
+  });
+  await response.body?.cancel();
+  if (!response.ok) throw new Error(`Supabase bridge returned ${response.status}`);
+  return true;
 }
 
 export async function pollHttpsSignals(roomId: string, participantId: string, cursor: string) {

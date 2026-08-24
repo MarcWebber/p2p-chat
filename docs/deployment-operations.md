@@ -99,7 +99,7 @@ channel
 
 - `persistSession: false`：项目不使用 Supabase Auth，不在本地维护登录会话。
 - `ack: true`：要求 Realtime 服务确认已接收 Broadcast。
-- 订阅成功后两个页面才开始发送 protocol v3 `hello`，避免信令通道尚未就绪时丢失对端发现消息。所有信令都带房间专属 P-256 成员签名，签名上下文同时包含 Room ID 和 Room Secret。
+- 订阅成功后两个网络负责人各发送 protocol v4 `wake`，并在收到 ACK 或完成 `0 / 1 / 3 / 7` 秒有界尝试后停止。所有信令都带房间专属 P-256 成员签名，签名上下文同时包含 Room ID 和 Room Secret。
 - 房间凭证被移除、替换或页面卸载时调用 `removeChannel`；仅切换当前界面不会释放其他房间连接。
 
 官方文档说明：客户端订阅后，Broadcast 通过 WebSocket 发送；公共频道允许未登录客户端订阅。参见 [Supabase Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast) 与 [Realtime Concepts](https://supabase.com/docs/guides/realtime/concepts)。成员签名会在信令进入 WebRTC 协商前拒绝陌生公钥，但公共频道仍会暴露建连元数据，也不能阻止垃圾流量或拒绝服务。
@@ -168,7 +168,7 @@ NEXT_PUBLIC_TURN_CREDENTIAL=<短时凭证>
 4. 在大陆及邻近区域部署 TURN，开放 UDP/TCP/TLS 443，并使用短时凭证。
 5. 建立中国电信、联通、移动和教育网的真实探测与连接成功率监控。
 
-当前已经按 [双活信令方案](signaling-resilience.md) 增加同源 Vercel HTTPS 通道。它能处理“页面可达但客户端 Supabase WebSocket 不可达”的情况；若 Vercel 本身也不可达，仍需把页面与同源信令迁移到大陆合规托管或增加另一个共同可达入口。
+当前已经按 [主备信令方案](signaling-resilience.md) 增加同源 Vercel HTTPS 通道。它能处理“页面可达但客户端 Supabase WebSocket 不可达”的情况；若 Vercel 本身也不可达，仍需把页面与同源信令迁移到大陆合规托管或增加另一个共同可达入口。
 
 Vercel 官方也明确给出面向中国访问时使用自定义域名和面向中国优化 CDN/托管方案的建议，参见 [Accessing Vercel-hosted sites from mainland China](https://vercel.com/kb/guide/accessing-vercel-hosted-sites-from-mainland-china)。需要使用中国大陆 CDN 节点时通常涉及 ICP 备案；可参考 [阿里云 ICP 备案说明](https://www.alibabacloud.com/help/en/icp-filing/basic-icp-service/user-guide/icp-filing-application-overview)。
 

@@ -26,7 +26,7 @@ export function LandingScreen({
             <span>本地保存</span><i />
             <span>图片和 Beta 文件</span>
           </div>
-          <p className="prototype-note">跨设备连接 · 双路加密信令</p>
+          <p className="prototype-note">跨设备连接 · 主备加密信令</p>
           {notice ? (
             <div className="landing-notice" role="status">
               <span>{notice}</span>

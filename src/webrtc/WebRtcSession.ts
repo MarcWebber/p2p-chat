@@ -24,11 +24,12 @@ import {
 import {
   type AnswerSignal,
   type CandidateSignal,
-  type HelloSignal,
   type OfferSignal,
   type OutgoingSignal,
   type SignalMessage,
   type UnsignedSignalMessage,
+  type WakeAckSignal,
+  type WakeSignal,
 } from "@/src/signal/types";
 import { shortId } from "@/src/utils/format";
 import { describeCandidate, inspectConnectionPath } from "@/src/webrtc/rtcStats";
@@ -42,6 +43,8 @@ type SessionOptions = {
   turnConfigured: boolean;
   sendSignal: (message: SignalMessage) => void;
   claimPeerPublicKey: (publicKey: string) => Promise<RoomMembership | null>;
+  nextWakeSeq: () => Promise<number>;
+  acceptPeerWake: (memberId: string, wakeSeq: number) => Promise<"new" | "duplicate" | "stale">;
   onWire: (wire: EncryptedWire) => void;
   onConnectionChange: (state: ConnectionState, mode: string) => void;
   onNotice: (notice: string) => void;
@@ -66,7 +69,6 @@ type Negotiation = {
 };
 
 type Timers = {
-  announce?: number;
   reconnect?: number;
   signalWarning?: number;
 };
@@ -79,6 +81,7 @@ export class WebRtcSession {
   private readonly wireAssembler = new EncryptedWireAssembler();
   private readonly pendingIce = new Map<string, RTCIceCandidateInit[]>();
   private readonly timers: Timers = {};
+  private readonly wakeTimers = new Set<number>();
   private phase: Phase = "discovering";
   private peer: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
@@ -94,6 +97,8 @@ export class WebRtcSession {
   private signalSendQueue = Promise.resolve();
   private sendQueue = Promise.resolve();
   private allowedPeerPublicKey: string | undefined;
+  private wakeGeneration = 0;
+  private activeWakeSeq = 0;
 
   constructor(private readonly options: SessionOptions) {
     this.allowedPeerPublicKey = expectedPeerPublicKey(options.membership);
@@ -107,7 +112,7 @@ export class WebRtcSession {
     this.trace("signal", "signal.ready", "WebRTC 状态机收到信令就绪通知", { level: "success" });
     if (this.channel?.readyState === "open") return;
     this.phase = "discovering";
-    this.enableAnnouncements();
+    this.startWakeCampaign();
   }
 
   onSignalUnavailable() {
@@ -164,7 +169,7 @@ export class WebRtcSession {
       this.trace("client", "client.reconnect.begin", "开始新一轮对等握手", {
         details: { attempt: this.reconnectAttempt, localEpoch: this.localEpoch },
       });
-      this.enableAnnouncements();
+      this.startWakeCampaign();
     };
 
     if (automatic) this.timers.reconnect = window.setTimeout(run, delayMs);
@@ -181,23 +186,58 @@ export class WebRtcSession {
     if (this.phase === "disposed") return;
     this.phase = "disposed";
     for (const name of Object.keys(this.timers) as Array<keyof Timers>) this.clearTimer(name);
+    this.cancelWakeCampaign();
     this.pendingIce.clear();
     this.wireAssembler.clear();
     this.closePeer();
   }
 
-  private enableAnnouncements(immediate = true) {
-    if (immediate) this.announce();
-    this.timers.announce ??= window.setInterval(() => this.announce(), RTC_POLICY.announceIntervalMs);
-  }
-
-  private announce() {
+  private startWakeCampaign() {
     if (
       this.phase === "connected"
       || this.phase === "disposed"
       || Date.now() < this.rejectedUntil
     ) return;
-    this.sendSignal({ type: "hello", restart: this.reconnectAttempt > 0 });
+    this.cancelWakeCampaign();
+    const generation = this.wakeGeneration;
+    void this.options.nextWakeSeq().then((wakeSeq) => {
+      if (this.phase === "disposed" || generation !== this.wakeGeneration) return;
+      this.activeWakeSeq = wakeSeq;
+      for (const delayMs of SIGNAL_POLICY.wakeRetryDelaysMs) {
+        const timer = window.setTimeout(() => {
+          this.wakeTimers.delete(timer);
+          if (
+            this.phase === "connected"
+            || this.phase === "disposed"
+            || generation !== this.wakeGeneration
+            || Date.now() < this.rejectedUntil
+          ) return;
+          this.sendSignal({
+            type: "wake",
+            wakeSeq,
+            restart: this.reconnectAttempt > 0,
+          });
+        }, delayMs);
+        this.wakeTimers.add(timer);
+      }
+      this.trace("hello", "wake.campaign.started", "已启动有界唤醒握手", {
+        details: { wakeSeq, attempts: SIGNAL_POLICY.wakeRetryDelaysMs.length },
+      });
+    }).catch((error: unknown) => {
+      if (this.phase === "disposed") return;
+      this.trace("signal", "wake.sequence.failed", "无法保存本地唤醒序号", {
+        level: "error",
+        details: diagnosticErrorDetails(error),
+      });
+      this.show("disconnected", "无法启动连接", "本机存储不可用，无法安全地开始新一轮连接。");
+    });
+  }
+
+  private cancelWakeCampaign() {
+    this.wakeGeneration += 1;
+    this.activeWakeSeq = 0;
+    for (const timer of this.wakeTimers) window.clearTimeout(timer);
+    this.wakeTimers.clear();
   }
 
   private sendSignal(message: OutgoingSignal) {
@@ -438,7 +478,7 @@ export class WebRtcSession {
     if (this.phase === "disposed" || this.channel?.readyState !== "open") return;
     this.phase = "connected";
     this.rejectedUntil = 0;
-    this.clearTimer("announce");
+    this.cancelWakeCampaign();
     this.clearTimer("reconnect");
     this.clearTimer("signalWarning");
     this.signalWarningShown = false;
@@ -502,7 +542,7 @@ export class WebRtcSession {
       this.resetPeerState();
       this.phase = "discovering";
       this.show("connecting", "对方正在重新连接");
-      this.enableAnnouncements(false);
+      this.startWakeCampaign();
       this.trace("hello", "peer.epoch.updated", "检测到对方的新重连轮次", {
         level: "warn",
         details: { remoteEpoch },
@@ -526,28 +566,52 @@ export class WebRtcSession {
     });
   }
 
-  private async handleHello(signal: HelloSignal) {
+  private async handleWake(signal: WakeSignal, member: VerifiedRoomMember) {
     const state = this.lockPeer(signal.from, signal.fromEpoch);
-    this.trace("hello", state === "accepted" ? "hello.received" : `hello.${state}`, state === "accepted"
-      ? "收到另一位参与者的 Hello"
-      : state === "busy"
-        ? "当前会话已有另一位参与者"
-        : "忽略旧页面实例的 Hello", {
-      level: state === "accepted" ? "success" : "warn",
-      details: { restart: signal.restart, remoteEpoch: signal.fromEpoch },
-      dedupeKey: `hello-${state}-${signal.fromEpoch}`,
-    });
     if (state === "busy") {
       this.sendSignal({
-        type: "rejected", to: signal.from, toEpoch: signal.fromEpoch,
+        type: "rejected",
+        to: signal.from,
+        toEpoch: signal.fromEpoch,
         reason: SIGNAL_REJECTION_REASON.roomFull,
       });
       return;
     }
     if (state !== "accepted") return;
+
+    this.cancelWakeCampaign();
+    const disposition = await this.options.acceptPeerWake(member.memberId, signal.wakeSeq);
+    this.sendSignal({
+      type: "wake-ack",
+      to: signal.from,
+      toEpoch: signal.fromEpoch,
+      wakeSeq: signal.wakeSeq,
+    });
+    this.trace("hello", `wake.${disposition}`, disposition === "new"
+      ? "收到对方的新一轮唤醒"
+      : disposition === "duplicate"
+        ? "收到重复唤醒并再次确认"
+        : "忽略已经过期的唤醒", {
+      level: disposition === "stale" ? "warn" : "success",
+      details: { wakeSeq: signal.wakeSeq, remoteEpoch: signal.fromEpoch },
+      dedupeKey: `wake-${disposition}-${signal.wakeSeq}`,
+    });
+    if (disposition === "stale") return;
     if (this.phase === "full") this.phase = "discovering";
     this.rejectedUntil = 0;
-    if (this.channel?.readyState !== "open") this.enableAnnouncements(false);
+    this.reportElection();
+    await this.ensureOffer();
+  }
+
+  private async handleWakeAck(signal: WakeAckSignal) {
+    if (signal.wakeSeq !== this.activeWakeSeq) return;
+    const state = this.lockPeer(signal.from, signal.fromEpoch);
+    if (state !== "accepted") return;
+    this.cancelWakeCampaign();
+    this.trace("hello", "wake.ack.received", "对方已确认本轮唤醒，停止重试", {
+      level: "success",
+      details: { wakeSeq: signal.wakeSeq, remoteEpoch: signal.fromEpoch },
+    });
     this.reportElection();
     await this.ensureOffer();
   }
@@ -565,7 +629,7 @@ export class WebRtcSession {
         && Date.now() - this.offerSentAt >= RTC_POLICY.offerResendDelayMs
         && this.sendLocalDescription(this.peer, active)
       ) {
-        this.trace("sdp", "sdp.offer.resent", "重复 Hello 命中当前协商，重新发送 Offer", {
+        this.trace("sdp", "sdp.offer.resent", "重复 Wake 命中当前协商，重新发送 Offer", {
           details: { negotiation: shortId(active.id) },
         });
       }
@@ -759,7 +823,7 @@ export class WebRtcSession {
   private async authorizeMember(signal: SignalMessage, member: VerifiedRoomMember) {
     if (member.publicKey === this.options.membership.identity.publicKey) return false;
     if (this.allowedPeerPublicKey) return member.publicKey === this.allowedPeerPublicKey;
-    if (signal.type !== "hello") return false;
+    if (signal.type !== "wake" && signal.type !== "wake-ack") return false;
     try {
       const membership = await this.options.claimPeerPublicKey(member.publicKey);
       const expected = membership ? expectedPeerPublicKey(membership) : undefined;
@@ -806,7 +870,7 @@ export class WebRtcSession {
     }
     if (!await this.authorizeMember(signal, member)) {
       if (
-        signal.type === "hello"
+        (signal.type === "wake" || signal.type === "wake-ack")
         && member.publicKey !== this.options.membership.identity.publicKey
       ) {
         this.sendSignal({
@@ -825,7 +889,8 @@ export class WebRtcSession {
     }
     if (signal.from === this.lock?.id && signal.fromEpoch >= this.lock.epoch) this.lock.seenAt = Date.now();
 
-    if (signal.type === "hello") return this.handleHello(signal);
+    if (signal.type === "wake") return this.handleWake(signal, member);
+    if (signal.type === "wake-ack") return this.handleWakeAck(signal);
     if (signal.type === "offer") return this.handleOffer(signal);
     if (signal.type === "answer") return this.handleAnswer(signal);
     if (signal.type === "candidate") return this.handleCandidate(signal);
@@ -837,7 +902,7 @@ export class WebRtcSession {
 
     this.phase = "full";
     this.rejectedUntil = Date.now() + RTC_POLICY.rejectBackoffMs;
-    this.enableAnnouncements(false);
+    this.cancelWakeCampaign();
     const memberLocked = signal.reason === SIGNAL_REJECTION_REASON.memberLocked;
     this.show(
       "disconnected",

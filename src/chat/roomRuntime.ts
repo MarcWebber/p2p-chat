@@ -39,7 +39,9 @@ import { createSignalTransport } from "@/src/signal/signalTransport";
 import {
   clearEncryptedHistory,
   deleteEncryptedMessage,
+  acceptRoomPeerWake,
   loadEncryptedHistory,
+  nextRoomWakeSequence,
   persistEncryptedMessage,
   type StoredRoom,
 } from "@/src/storage/chatStorage";
@@ -172,6 +174,8 @@ export class RoomRuntime {
           turnConfigured,
           sendSignal: (message) => this.transport?.send(message),
           claimPeerPublicKey: (publicKey) => this.options.onRoomMembership(this.roomId, publicKey),
+          nextWakeSeq: () => nextRoomWakeSequence(this.roomId),
+          acceptPeerWake: (memberId, wakeSeq) => acceptRoomPeerWake(this.roomId, memberId, wakeSeq),
           onWire: (wire) => void this.acceptWire(wire),
           onConnectionChange: (connection, connectionMode) => {
             const becameConnected = this.snapshot.connection !== "connected"

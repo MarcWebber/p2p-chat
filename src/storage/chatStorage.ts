@@ -29,6 +29,10 @@ const ROOM_STORE = "rooms";
 const MESSAGE_STORE = "messages";
 const SETTINGS_STORE = "settings";
 const PROFILE_KEY = "local-profile";
+const INSTALLATION_KEY = "browser-installation";
+const NETWORK_LEASE_KEY = "network-owner-lease";
+const WAKE_SEQUENCE_PREFIX = "wake-sequence:";
+const PEER_WAKE_PREFIX = "peer-wake:";
 const MAX_MESSAGES = 200;
 
 export class StoredRoomCredentialMismatchError extends Error {}
@@ -67,6 +71,22 @@ type StoredSetting<T> = {
   key: string;
   value: T;
 };
+
+export type BrowserInstallation = {
+  version: 1;
+  installationId: string;
+  createdAt: number;
+};
+
+export type BrowserNetworkLease = {
+  version: 1;
+  installationId: string;
+  ownerTabId: string;
+  fence: number;
+  expiresAt: number;
+};
+
+export type PeerWakeDisposition = "new" | "duplicate" | "stale";
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -181,6 +201,48 @@ function parseProfile(value: unknown): ProfileMetadata | null {
     };
   }
   throw new Error("Invalid stored profile");
+}
+
+function parseInstallation(value: unknown): BrowserInstallation | null {
+  if (!value || typeof value !== "object") return null;
+  const setting = value as Partial<StoredSetting<Partial<BrowserInstallation>>>;
+  const installation = setting.value;
+  if (
+    setting.key !== INSTALLATION_KEY
+    || installation?.version !== 1
+    || typeof installation.installationId !== "string"
+    || !installation.installationId
+    || typeof installation.createdAt !== "number"
+    || !Number.isFinite(installation.createdAt)
+  ) return null;
+  return installation as BrowserInstallation;
+}
+
+function parseNetworkLease(value: unknown): BrowserNetworkLease | null {
+  if (!value || typeof value !== "object") return null;
+  const setting = value as Partial<StoredSetting<Partial<BrowserNetworkLease>>>;
+  const lease = setting.value;
+  if (
+    setting.key !== NETWORK_LEASE_KEY
+    || lease?.version !== 1
+    || typeof lease.installationId !== "string"
+    || !lease.installationId
+    || typeof lease.ownerTabId !== "string"
+    || !lease.ownerTabId
+    || !Number.isSafeInteger(lease.fence)
+    || Number(lease.fence) < 1
+    || typeof lease.expiresAt !== "number"
+    || !Number.isFinite(lease.expiresAt)
+  ) return null;
+  return lease as BrowserNetworkLease;
+}
+
+function settingNumber(value: unknown, expectedKey: string) {
+  if (!value || typeof value !== "object") return 0;
+  const setting = value as Partial<StoredSetting<unknown>>;
+  return setting.key === expectedKey && Number.isSafeInteger(setting.value) && Number(setting.value) > 0
+    ? Number(setting.value)
+    : 0;
 }
 
 function parseMessageBucket(value: unknown, roomId: string) {
@@ -437,6 +499,149 @@ export async function saveLocalProfile(profile: ProfileMetadata) {
   } satisfies StoredSetting<ProfileMetadata>);
   await completed;
   return profile;
+}
+
+export async function ensureBrowserInstallation() {
+  const database = await openDatabase();
+  const transaction = database.transaction(SETTINGS_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(SETTINGS_STORE);
+  const current = parseInstallation(await requestResult(store.get(INSTALLATION_KEY)));
+  if (current) {
+    await completed;
+    return current;
+  }
+  const installation: BrowserInstallation = {
+    version: 1,
+    installationId: crypto.randomUUID(),
+    createdAt: Date.now(),
+  };
+  store.put({ key: INSTALLATION_KEY, value: installation } satisfies StoredSetting<BrowserInstallation>);
+  await completed;
+  return installation;
+}
+
+export async function acquireBrowserNetworkLease(
+  installationId: string,
+  ownerTabId: string,
+  now: number,
+  ttlMs: number,
+) {
+  const database = await openDatabase();
+  const transaction = database.transaction(SETTINGS_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(SETTINGS_STORE);
+  const current = parseNetworkLease(await requestResult(store.get(NETWORK_LEASE_KEY)));
+  const alreadyOwned = current?.installationId === installationId
+    && current.ownerTabId === ownerTabId;
+  if (current && current.expiresAt > now && !alreadyOwned) {
+    await completed;
+    return null;
+  }
+  const lease: BrowserNetworkLease = {
+    version: 1,
+    installationId,
+    ownerTabId,
+    fence: alreadyOwned ? current.fence : (current?.fence ?? 0) + 1,
+    expiresAt: now + ttlMs,
+  };
+  store.put({ key: NETWORK_LEASE_KEY, value: lease } satisfies StoredSetting<BrowserNetworkLease>);
+  await completed;
+  return lease;
+}
+
+export async function renewBrowserNetworkLease(
+  installationId: string,
+  ownerTabId: string,
+  fence: number,
+  now: number,
+  ttlMs: number,
+) {
+  const database = await openDatabase();
+  const transaction = database.transaction(SETTINGS_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(SETTINGS_STORE);
+  const current = parseNetworkLease(await requestResult(store.get(NETWORK_LEASE_KEY)));
+  if (
+    !current
+    || current.installationId !== installationId
+    || current.ownerTabId !== ownerTabId
+    || current.fence !== fence
+  ) {
+    await completed;
+    return null;
+  }
+  const lease: BrowserNetworkLease = { ...current, expiresAt: now + ttlMs };
+  store.put({ key: NETWORK_LEASE_KEY, value: lease } satisfies StoredSetting<BrowserNetworkLease>);
+  await completed;
+  return lease;
+}
+
+export async function releaseBrowserNetworkLease(
+  installationId: string,
+  ownerTabId: string,
+  fence: number,
+) {
+  const database = await openDatabase();
+  const transaction = database.transaction(SETTINGS_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(SETTINGS_STORE);
+  const current = parseNetworkLease(await requestResult(store.get(NETWORK_LEASE_KEY)));
+  if (
+    current?.installationId === installationId
+    && current.ownerTabId === ownerTabId
+    && current.fence === fence
+  ) store.delete(NETWORK_LEASE_KEY);
+  await completed;
+}
+
+export async function nextRoomWakeSequence(roomId: string) {
+  const key = `${WAKE_SEQUENCE_PREFIX}${roomId}`;
+  const database = await openDatabase();
+  const transaction = database.transaction(SETTINGS_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(SETTINGS_STORE);
+  const current = settingNumber(await requestResult(store.get(key)), key);
+  const next = current >= Number.MAX_SAFE_INTEGER ? 1 : current + 1;
+  store.put({ key, value: next } satisfies StoredSetting<number>);
+  await completed;
+  return next;
+}
+
+export async function acceptRoomPeerWake(
+  roomId: string,
+  peerMemberId: string,
+  wakeSeq: number,
+): Promise<PeerWakeDisposition> {
+  const key = `${PEER_WAKE_PREFIX}${roomId}`;
+  const database = await openDatabase();
+  const transaction = database.transaction(SETTINGS_STORE, "readwrite");
+  const completed = transactionDone(transaction);
+  const store = transaction.objectStore(SETTINGS_STORE);
+  const value = await requestResult(store.get(key));
+  const setting = value && typeof value === "object"
+    ? value as Partial<StoredSetting<{ memberId?: unknown; wakeSeq?: unknown }>>
+    : null;
+  const peerWake = setting?.key === key ? setting.value : undefined;
+  const current = peerWake
+    && peerWake.memberId === peerMemberId
+    && Number.isSafeInteger(peerWake.wakeSeq)
+    ? Number(peerWake.wakeSeq)
+    : 0;
+  if (wakeSeq < current) {
+    await completed;
+    return "stale";
+  }
+  if (wakeSeq === current && current > 0) {
+    await completed;
+    return "duplicate";
+  }
+  store.put({
+    key,
+    value: { memberId: peerMemberId, wakeSeq },
+  } satisfies StoredSetting<{ memberId: string; wakeSeq: number }>);
+  await completed;
+  return "new";
 }
 
 export async function updateStoredRoomPeerProfile(

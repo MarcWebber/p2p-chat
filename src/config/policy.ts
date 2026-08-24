@@ -37,17 +37,19 @@ export const UI_POLICY = {
 } as const;
 
 export const SIGNAL_POLICY = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   maxIdLength: 128,
   maxSdpLength: 1_000_000,
   maxCandidateLength: 8_192,
   realtimeEvent: "signal",
+  realtimeBridgeEvent: "signal-bridge",
   httpsEndpoint: "/api/signal",
   httpsRequestIdHeader: "X-TwoOnly-Signal-Request-Id",
-  httpsPollIntervalMs: 1_200,
   httpsRequestTimeoutMs: 10_000,
-  httpsHelloIntervalMs: 5_000,
+  wakeRetryDelaysMs: [0, 1_000, 3_000, 7_000],
+  httpsFallbackPollDelaysMs: [0, 1_000, 2_000, 4_000, 5_000, 6_000, 7_000],
   httpsReplayWindowMs: 15_000,
+  httpsBridgeWindowMs: 30_000,
   httpsQueueTtlSeconds: 180,
   httpsQueueMaxEvents: 128,
   httpsMaxRequestCharacters: 1_500_000,
@@ -70,13 +72,18 @@ export const RTC_POLICY = {
   ],
   reconnectDelayMs: 800,
   disconnectedGraceMs: 2_500,
-  announceIntervalMs: 1_500,
   signalWarningDelayMs: 3_500,
   peerLockTimeoutMs: 10_000,
   offerResendDelayMs: 1_000,
   rejectBackoffMs: 5_000,
   maxPendingNegotiations: 2,
   maxPendingCandidates: 32,
+} as const;
+
+export const BROWSER_NETWORK_POLICY = {
+  leaseTtlMs: 15_000,
+  leaseRenewMs: 5_000,
+  leaseRetryMs: 5_000,
 } as const;
 
 export const RESOURCE_NAMES = {

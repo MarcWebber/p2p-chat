@@ -27,7 +27,8 @@ type SignalTransportOptions = {
 };
 
 const SIGNAL_STAGES = {
-  hello: "hello",
+  wake: "hello",
+  "wake-ack": "hello",
   offer: "sdp",
   answer: "sdp",
   candidate: "ice",
@@ -40,17 +41,20 @@ function signalDiagnostic(
   provider?: SignalProviderName,
 ): ConnectionDiagnosticEvent {
   const stage = SIGNAL_STAGES[message.type];
-  const code = message.type === "hello" ? "hello" : `${stage}.${message.type}`;
-  const dedupe = message.type === "hello" || message.type === "candidate";
+  const code = message.type === "wake" || message.type === "wake-ack"
+    ? message.type
+    : `${stage}.${message.type}`;
+  const dedupe = message.type === "wake" || message.type === "candidate";
   return {
     stage,
     code: `${code}.${direction}`,
-    level: direction === "sent" && message.type === "hello" ? "success" : "info",
+    level: direction === "sent" && message.type === "wake" ? "success" : "info",
     message: `${direction === "sent" ? "发送" : "收到"} ${message.type} 信令`,
     details: {
       provider,
       hasTarget: "to" in message && Boolean(message.to),
-      restart: message.type === "hello" ? message.restart : undefined,
+      restart: message.type === "wake" ? message.restart : undefined,
+      wakeSeq: message.type === "wake" || message.type === "wake-ack" ? message.wakeSeq : undefined,
       localEpoch: message.fromEpoch,
       remoteEpoch: "toEpoch" in message ? message.toEpoch : undefined,
       negotiation: "negotiationId" in message ? shortId(message.negotiationId) : undefined,
@@ -68,36 +72,18 @@ export function createSignalTransport({
   onStatus,
   onDiagnostic,
 }: SignalTransportOptions) {
-  const providers: SignalProvider[] = [];
   const states = new Map<SignalProviderName, SignalProviderState>();
   const seenSignals = new Set<string>();
+  const bridgePeers = new Map<string, number>();
   let disposed = false;
-  let lastAvailable: boolean | undefined;
-  let lastMode = "";
+  let lastStatus: "subscribed" | "unavailable" | undefined;
+  let negotiationActive = true;
+  let httpsStarted = false;
 
-  const updateAggregateState = () => {
-    if (disposed || !states.size) return;
-    const ready = [...states].filter(([, state]) => state === "ready").map(([name]) => name);
-    const unavailable = [...states.values()].every((state) => state === "unavailable");
-    if (!ready.length && !unavailable) return;
-    const mode = ready.length === states.size ? "dual" : ready.length ? "degraded" : "unavailable";
-    if (mode !== lastMode) {
-      lastMode = mode;
-      onDiagnostic({
-        stage: "signal",
-        code: `signal.route.${mode}`,
-        level: mode === "dual" ? "success" : mode === "unavailable" ? "error" : "warn",
-        message: mode === "dual"
-          ? "Supabase 与 HTTPS 双信令均可用"
-          : mode === "degraded" ? "信令正在使用可用通道降级运行" : "所有信令通道当前均不可用",
-        details: { readyProviders: ready.join(",") || "none" },
-      });
-    }
-    const available = ready.length > 0;
-    if (available !== lastAvailable && (available || unavailable)) {
-      lastAvailable = available;
-      onStatus(available ? "subscribed" : "unavailable");
-    }
+  const emitStatus = (status: "subscribed" | "unavailable") => {
+    if (disposed || lastStatus === status) return;
+    lastStatus = status;
+    onStatus(status);
   };
 
   const providerOptions = (name: SignalProviderName) => ({
@@ -105,7 +91,28 @@ export function createSignalTransport({
     onMessage: (value: unknown) => receive(name, value),
     onState: (state: SignalProviderState) => {
       states.set(name, state);
-      updateAggregateState();
+      if (name === "supabase" && state === "ready") {
+        https.setNegotiationActive?.(false);
+        onDiagnostic({
+          stage: "signal",
+          code: "signal.route.primary",
+          level: "success",
+          message: "使用 Supabase 主信令，Redis 降级通道保持休眠",
+          details: { readyProviders: "supabase" },
+          dedupeKey: "signal-route-primary",
+        });
+        emitStatus("subscribed");
+        return;
+      }
+      if (name === "supabase" && state === "unavailable") {
+        emitStatus("unavailable");
+        ensureHttpsStarted();
+        return;
+      }
+      if (name === "https" && states.get("supabase") !== "ready") {
+        if (state === "ready") emitStatus("subscribed");
+        else if (state === "unavailable") emitStatus("unavailable");
+      }
     },
     onDiagnostic,
   });
@@ -130,13 +137,30 @@ export function createSignalTransport({
       }
       seenSignals.add(value.signalId);
     }
+    if (value.from !== participantId) {
+      if (provider === "https") {
+        bridgePeers.set(value.from, Date.now() + SIGNAL_POLICY.httpsBridgeWindowMs);
+        ensureHttpsStarted(false);
+        https.setPublishOnlyActive?.(true);
+      } else {
+        bridgePeers.delete(value.from);
+      }
+    }
     onDiagnostic(signalDiagnostic(value, "received", provider));
     onMessage(value);
   };
 
+  const https = createHttpsSignalTransport({
+    ...providerOptions("https"),
+    participantId,
+    secret,
+  });
   let supabase: SignalProvider | null = null;
   try {
-    supabase = createSupabaseSignalTransport(providerOptions("supabase"));
+    supabase = createSupabaseSignalTransport({
+      ...providerOptions("supabase"),
+      onBridgeMessage: (value) => https.receiveBridge?.(value),
+    });
   } catch (error: unknown) {
     onDiagnostic({
       stage: "signal",
@@ -146,8 +170,7 @@ export function createSignalTransport({
       details: { provider: "supabase", ...diagnosticErrorDetails(error) },
     });
   }
-  if (supabase) providers.push(supabase);
-  else if (!PUBLIC_SIGNAL_CONFIG) {
+  if (!supabase && !PUBLIC_SIGNAL_CONFIG) {
     onDiagnostic({
       stage: "signal",
       code: "signal.supabase.config.missing",
@@ -155,38 +178,73 @@ export function createSignalTransport({
       message: "未配置 Supabase Realtime，将仅尝试 HTTPS 降级信令",
     });
   }
-  providers.push(createHttpsSignalTransport({
-    ...providerOptions("https"),
-    participantId,
-    secret,
-  }));
-  for (const provider of providers) states.set(provider.name, "connecting");
+  if (supabase) states.set("supabase", "connecting");
+  states.set("https", "connecting");
+
+  function ensureHttpsStarted(enablePolling = true) {
+    if (disposed) return;
+    if (!httpsStarted) {
+      httpsStarted = true;
+      https.start();
+    }
+    if (enablePolling) {
+      onDiagnostic({
+        stage: "signal",
+        code: "signal.route.fallback",
+        level: "warn",
+        message: "Supabase 不可用，临时启用有界 Redis 降级信令",
+        details: { readyProviders: "https" },
+        dedupeKey: "signal-route-fallback",
+      });
+      https.setNegotiationActive?.(negotiationActive);
+    }
+  }
 
   return {
     start() {
       onDiagnostic({
         stage: "signal",
         code: "signal.transport.created",
-        message: "已创建双通道信令传输",
+        message: "已创建主备信令传输",
         details: {
           supabaseConfigured: Boolean(PUBLIC_SIGNAL_CONFIG),
-          providerCount: providers.length,
+          providerCount: supabase ? 2 : 1,
         },
       });
-      for (const provider of providers) provider.start();
+      if (supabase) supabase.start();
+      else ensureHttpsStarted();
     },
     send(message: SignalMessage) {
       const routed = message as RoutedSignalMessage;
       onDiagnostic(signalDiagnostic(routed, "sent"));
-      for (const provider of providers) provider.send(routed);
+      if ("to" in routed && routed.to) {
+        const bridgeUntil = bridgePeers.get(routed.to) ?? 0;
+        if (bridgeUntil > Date.now()) {
+          ensureHttpsStarted(false);
+          https.setPublishOnlyActive?.(true);
+          https.send(routed);
+          return;
+        }
+        bridgePeers.delete(routed.to);
+      }
+      if (supabase && states.get("supabase") !== "unavailable") {
+        supabase.send(routed);
+        return;
+      }
+      ensureHttpsStarted();
+      https.send(routed);
     },
     setNegotiationActive(active: boolean) {
-      for (const provider of providers) provider.setNegotiationActive?.(active);
+      negotiationActive = active;
+      if (states.get("supabase") === "ready") https.setNegotiationActive?.(false);
+      else if (httpsStarted) https.setNegotiationActive?.(active);
     },
     dispose() {
       disposed = true;
       seenSignals.clear();
-      for (const provider of providers) provider.dispose();
+      bridgePeers.clear();
+      supabase?.dispose();
+      https.dispose();
     },
   };
 }

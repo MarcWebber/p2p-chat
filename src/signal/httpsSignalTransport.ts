@@ -3,6 +3,7 @@ import { createJsonCipher } from "@/src/crypto/aesGcm";
 import { diagnosticErrorDetails } from "@/src/diagnostics/connectionDiagnostics";
 import {
   isHttpsSignalPollResponse,
+  isHttpsSignalEvent,
   type HttpsSignalPollRequest,
   type HttpsSignalPublishRequest,
 } from "@/src/signal/httpsSignalProtocol";
@@ -29,11 +30,14 @@ export function createHttpsSignalTransport({
   const cipher = createJsonCipher(`${secret}:twoonly-signal:v1`);
   let state: SignalProviderState = "connecting";
   let cursor = "0-0";
+  let started = false;
   let active = false;
+  let publishOnlyActive = false;
   let disposed = false;
+  let polling = false;
   let pollTimer: number | undefined;
   let pollGeneration = 0;
-  let lastHelloAt = 0;
+  let pollIndex = 0;
   let acceptPublishedAfter = Date.now() - SIGNAL_POLICY.httpsReplayWindowMs;
 
   function updateState(next: SignalProviderState) {
@@ -69,17 +73,50 @@ export function createHttpsSignalTransport({
 
   function stopPolling() {
     pollGeneration += 1;
+    polling = false;
     if (pollTimer !== undefined) window.clearTimeout(pollTimer);
     pollTimer = undefined;
   }
 
-  function schedulePoll(delay = 0) {
+  function schedulePoll(delay: number) {
     const generation = pollGeneration;
     pollTimer = window.setTimeout(() => void poll(generation), delay);
   }
 
+  function beginPolling() {
+    stopPolling();
+    polling = true;
+    pollIndex = 0;
+    cursor = "0-0";
+    acceptPublishedAfter = Date.now() - SIGNAL_POLICY.httpsReplayWindowMs;
+    schedulePoll(SIGNAL_POLICY.httpsFallbackPollDelaysMs[pollIndex]);
+  }
+
+  async function acceptEvent(event: Parameters<typeof isHttpsSignalEvent>[0]) {
+    if (!isHttpsSignalEvent(event) || event.publishedAt < acceptPublishedAfter) return;
+    try {
+      const message = await cipher.decrypt(event.payload);
+      if (!isRoutedSignalMessage(message)
+        || message.from !== event.senderId
+        || message.signalId !== event.signalId) {
+        throw new Error("invalid encrypted signal");
+      }
+      onMessage(message);
+    } catch (error: unknown) {
+      onDiagnostic({
+        stage: "signal",
+        code: "signal.https.message.invalid",
+        level: "warn",
+        message: "忽略了一条无法验证的 HTTPS 降级信令",
+        details: { provider: "https", ...diagnosticErrorDetails(error) },
+        dedupeKey: "https-invalid-message",
+      });
+    }
+  }
+
   async function poll(generation: number) {
     if (disposed || !active || generation !== pollGeneration) return;
+    pollTimer = undefined;
     try {
       const body = await post({
         action: "poll",
@@ -92,32 +129,17 @@ export function createHttpsSignalTransport({
       cursor = body.cursor;
       updateState("ready");
       for (const event of body.events) {
-        if (event.publishedAt < acceptPublishedAfter) continue;
-        try {
-          const message = await cipher.decrypt(event.payload);
-          if (!isRoutedSignalMessage(message)
-            || message.from !== event.senderId
-            || message.signalId !== event.signalId) {
-            throw new Error("invalid encrypted signal");
-          }
-          onMessage(message);
-        } catch (error: unknown) {
-          onDiagnostic({
-            stage: "signal",
-            code: "signal.https.message.invalid",
-            level: "warn",
-            message: "忽略了一条无法验证的 HTTPS 降级信令",
-            details: { provider: "https", ...diagnosticErrorDetails(error) },
-            dedupeKey: "https-invalid-message",
-          });
-        }
+        await acceptEvent(event);
       }
     } catch (error: unknown) {
       if (disposed || !active || generation !== pollGeneration) return;
       fail("signal.https.poll.failed", "Vercel HTTPS 降级信令暂时不可用", error);
     } finally {
       if (!disposed && active && generation === pollGeneration) {
-        schedulePoll(SIGNAL_POLICY.httpsPollIntervalMs);
+        pollIndex += 1;
+        const delay = SIGNAL_POLICY.httpsFallbackPollDelaysMs[pollIndex];
+        if (delay === undefined) polling = false;
+        else schedulePoll(delay);
       }
     }
   }
@@ -125,21 +147,21 @@ export function createHttpsSignalTransport({
   return {
     name: "https",
     start() {
-      if (active || disposed) return;
-      active = true;
+      if (started || disposed) return;
+      started = true;
       onDiagnostic({
         stage: "signal",
-        code: "signal.https.poll.start",
-        message: "开始连接同源 Vercel HTTPS 降级信令",
+        code: "signal.https.ready",
+        message: "同源 Vercel HTTPS 降级信令已准备，默认不轮询",
         details: { provider: "https" },
       });
-      schedulePoll();
     },
     send(message) {
-      const now = Date.now();
-      if (message.type === "hello" && now - lastHelloAt < SIGNAL_POLICY.httpsHelloIntervalMs) return;
-      if (message.type === "hello") lastHelloAt = now;
+      if (!started || (!active && !publishOnlyActive) || disposed) return;
+      if (active && message.type === "wake" && !polling) beginPolling();
+      const generation = pollGeneration;
       void cipher.encrypt(message).then(async (payload) => {
+        if (disposed || (!publishOnlyActive && (!active || generation !== pollGeneration))) return;
         const sentAt = Date.now();
         await post({
           action: "publish",
@@ -166,15 +188,20 @@ export function createHttpsSignalTransport({
         );
       });
     },
+    receiveBridge(value) {
+      if (disposed) return;
+      void acceptEvent(value);
+    },
     setNegotiationActive(next) {
-      if (disposed || active === next) return;
+      if (disposed || !started || active === next) return;
       active = next;
       stopPolling();
       if (active) {
-        cursor = "0-0";
-        acceptPublishedAfter = Date.now() - SIGNAL_POLICY.httpsReplayWindowMs;
-        schedulePoll();
+        beginPolling();
       }
+    },
+    setPublishOnlyActive(next) {
+      publishOnlyActive = next;
     },
     dispose() {
       disposed = true;

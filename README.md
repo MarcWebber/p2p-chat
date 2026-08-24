@@ -62,9 +62,9 @@ TwoOnly 只做一件事：把这条路缩短到两个人之间。没有公开广
 | --- | --- | --- |
 | WebRTC 传输加密之外，消息还会在浏览器内使用共享随机密钥进行 AES-GCM 加密。 | 每个房间持久保存两位成员的 P-256 公钥；断线或空房后也不会把席位交给新的人。 | 房间凭证、头像和常规密文历史保存在各自设备的 IndexedDB，不建立中心化聊天档案。 |
 
-| 🛰 双活信令 | 📦 轻重消息兼顾 | 🧭 克制的界面 |
+| 🛰 主备信令 | 📦 轻重消息兼顾 | 🧭 克制的界面 |
 | --- | --- | --- |
-| Supabase Realtime 与同源 Vercel HTTPS 同时工作，任意一路可用即可继续协商。 | 小消息进入本地加密历史；最大 100 MB 的图片和 Beta 文件通过 DataChannel 分块传输。 | 正常聊天隐藏调试信息，只保留连接状态与安全码；脱敏诊断仍可在浏览器 Console 中用于排障。 |
+| Supabase Realtime 承担主路径；只有主通道明确失败时，Vercel HTTPS / Redis 才在有界窗口内介入。 | 小消息进入本地加密历史；最大 100 MB 的图片和 Beta 文件通过 DataChannel 分块传输。 | 正常聊天隐藏调试信息，只保留连接状态与安全码；脱敏诊断仍可在浏览器 Console 中用于排障。 |
 
 ## 三步开始一段对话
 
@@ -163,7 +163,7 @@ UPSTASH_REDIS_REST_URL=https://YOUR_DATABASE.upstash.io
 UPSTASH_REDIS_REST_TOKEN=xxx
 ```
 
-详细说明见 [Supabase + Vercel HTTPS 双活信令](docs/signaling-resilience.md) 与 [部署运维手册](docs/deployment-operations.md)。
+详细说明见 [Supabase + Vercel HTTPS 主备信令](docs/signaling-resilience.md) 与 [部署运维手册](docs/deployment-operations.md)。
 
 ## 部署
 

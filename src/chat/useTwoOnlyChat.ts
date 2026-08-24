@@ -10,7 +10,7 @@ import type {
   ProfileMetadata,
   RoomMetadata,
 } from "@/src/chat/types";
-import { CHAT_POLICY, SIGNAL_POLICY, UI_POLICY } from "@/src/config/policy";
+import { BROWSER_NETWORK_POLICY, CHAT_POLICY, SIGNAL_POLICY, UI_POLICY } from "@/src/config/policy";
 import { createSafetyCode } from "@/src/crypto/messageCrypto";
 import { ConnectionDiagnostics } from "@/src/diagnostics/connectionDiagnostics";
 import { useAudioRecorder } from "@/src/media/useAudioRecorder";
@@ -32,17 +32,22 @@ import {
 } from "@/src/protocol/roomMetadataProtocol";
 import {
   claimStoredRoomPeer,
+  acquireBrowserNetworkLease,
   deleteStoredRoom,
+  ensureBrowserInstallation,
   LegacyRoomInvitationError,
   listStoredRooms,
   loadLocalProfile,
   persistStoredRoomOrder,
+  releaseBrowserNetworkLease,
+  renewBrowserNetworkLease,
   saveLocalProfile,
   StoredRoomCredentialMismatchError,
   updateStoredRoomMetadata,
   updateStoredRoomPeerProfile,
   upsertStoredRoom,
   type StoredRoom,
+  type BrowserNetworkLease,
 } from "@/src/storage/chatStorage";
 import { copyText, readAsDataUrl } from "@/src/utils/browser";
 import { formatBytes } from "@/src/utils/format";
@@ -97,6 +102,7 @@ export function useTwoOnlyChat() {
     reference: MessageReplyReference;
   } | null>(null);
   const [globalNotice, setGlobalNotice] = useState("");
+  const [networkOwner, setNetworkOwner] = useState(false);
   const [copiedRoomId, setCopiedRoomId] = useState("");
   const [bootstrapDiagnostics] = useState(() => new ConnectionDiagnostics());
 
@@ -105,6 +111,7 @@ export function useTwoOnlyChat() {
   const activeRoomIdRef = useRef("");
   const copyTimerRef = useRef<number | undefined>(undefined);
   const mountedRef = useRef(false);
+  const networkOwnerTabIdRef = useRef("");
   activeRoomIdRef.current = activeRoomId ?? "";
 
   const setRoomNotice = (roomId: string, notice: string) => {
@@ -126,7 +133,10 @@ export function useTwoOnlyChat() {
     },
   ) => {
     const runtime = runtimesRef.current.get(activeRoomIdRef.current);
-    if (!runtime) return;
+    if (!runtime) {
+      setGlobalNotice("同一浏览器的另一标签页正在保持连接，请在那个标签页发送消息。");
+      return;
+    }
     await runtime.send(kind, content, profileMetadataRef.current.profile, options);
   };
 
@@ -194,6 +204,105 @@ export function useTwoOnlyChat() {
       if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    const ownerTabId = networkOwnerTabIdRef.current ||= crypto.randomUUID();
+    let stopped = false;
+    let suspended = false;
+    let running = false;
+    let installationId = "";
+    let lease: BrowserNetworkLease | null = null;
+
+    const tick = async () => {
+      if (stopped || suspended || running) return;
+      running = true;
+      try {
+        if (!installationId) {
+          installationId = (await ensureBrowserInstallation()).installationId;
+        }
+        const now = Date.now();
+        const nextLease = lease
+          ? await renewBrowserNetworkLease(
+              installationId,
+              ownerTabId,
+              lease.fence,
+              now,
+              BROWSER_NETWORK_POLICY.leaseTtlMs,
+            )
+          : await acquireBrowserNetworkLease(
+              installationId,
+              ownerTabId,
+              now,
+              BROWSER_NETWORK_POLICY.leaseTtlMs,
+            );
+        if (stopped || suspended) return;
+        lease = nextLease;
+        setNetworkOwner(Boolean(nextLease));
+        bootstrapDiagnostics.report(nextLease ? {
+          stage: "client",
+          code: "client.network_owner.acquired",
+          level: "success",
+          message: "当前标签页持有浏览器网络租约",
+          details: { fence: nextLease.fence },
+          dedupeKey: "browser-network-owner",
+        } : {
+          stage: "client",
+          code: "client.network_owner.following",
+          level: "info",
+          message: "网络连接由同一浏览器的另一标签页维护",
+          dedupeKey: "browser-network-owner",
+        });
+      } catch {
+        lease = null;
+        if (!stopped && !suspended) setNetworkOwner(false);
+      } finally {
+        running = false;
+      }
+    };
+
+    const release = () => {
+      const current = lease;
+      lease = null;
+      if (current && installationId) {
+        void releaseBrowserNetworkLease(
+          installationId,
+          ownerTabId,
+          current.fence,
+        );
+      }
+      if (!stopped) setNetworkOwner(false);
+    };
+    const suspend = () => {
+      suspended = true;
+      release();
+    };
+    const resume = () => {
+      if (stopped) return;
+      suspended = false;
+      void tick();
+    };
+    const refreshNow = () => {
+      if (document.visibilityState !== "visible" || stopped || suspended) return;
+      void tick();
+    };
+
+    const interval = window.setInterval(
+      () => void tick(),
+      Math.min(BROWSER_NETWORK_POLICY.leaseRenewMs, BROWSER_NETWORK_POLICY.leaseRetryMs),
+    );
+    window.addEventListener("pagehide", suspend);
+    window.addEventListener("pageshow", resume);
+    document.addEventListener("visibilitychange", refreshNow);
+    void tick();
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+      release();
+      window.removeEventListener("pagehide", suspend);
+      window.removeEventListener("pageshow", resume);
+      document.removeEventListener("visibilitychange", refreshNow);
+    };
+  }, [bootstrapDiagnostics]);
 
   useEffect(() => {
     let active = true;
@@ -294,6 +403,19 @@ export function useTwoOnlyChat() {
   }, [bootstrapDiagnostics]);
 
   useEffect(() => {
+    if (!networkOwner) {
+      for (const runtime of runtimesRef.current.values()) runtime.dispose();
+      runtimesRef.current.clear();
+      setRoomSnapshots((current) => Object.fromEntries(Object.entries(current).map(([roomId, snapshot]) => [
+        roomId,
+        {
+          ...snapshot,
+          connection: "waiting",
+          connectionMode: "由同一浏览器的另一标签页保持连接",
+        },
+      ])));
+      return;
+    }
     const expectedRooms = new Map(storedRooms.map((room) => [room.roomId, room]));
     const initialSnapshots: Record<string, RoomRuntimeSnapshot> = {};
     const removedRoomIds: string[] = [];
@@ -369,10 +491,12 @@ export function useTwoOnlyChat() {
       });
     }
     for (const runtime of newRuntimes) runtime.start();
-  }, [storedRooms]);
+  }, [networkOwner, storedRooms]);
 
   const reconnect = useCallback(() => {
-    runtimesRef.current.get(activeRoomIdRef.current)?.reconnect();
+    const runtime = runtimesRef.current.get(activeRoomIdRef.current);
+    if (runtime) runtime.reconnect();
+    else setGlobalNotice("同一浏览器的另一标签页正在保持连接，请在那个标签页重连。");
   }, []);
 
   useEffect(() => {
@@ -393,7 +517,9 @@ export function useTwoOnlyChat() {
   const activeRoom = storedRooms.find((room) => room.roomId === activeRoomId);
   const activeSnapshot = activeRoom ? roomSnapshots[activeRoom.roomId] : undefined;
   const connection = activeSnapshot?.connection ?? "waiting";
-  const connectionMode = activeSnapshot?.connectionMode ?? "正在建立房间连接";
+  const connectionMode = activeRoom && !networkOwner
+    ? "由同一浏览器的另一标签页保持连接"
+    : activeSnapshot?.connectionMode ?? "正在建立房间连接";
   const messages = activeSnapshot?.messages ?? EMPTY_MESSAGES;
   const peerProfile = activeSnapshot?.peerProfile;
   const notice = activeSnapshot?.notice || globalNotice;
