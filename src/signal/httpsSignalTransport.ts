@@ -2,8 +2,11 @@ import { SIGNAL_POLICY } from "@/src/config/policy";
 import { createJsonCipher } from "@/src/crypto/aesGcm";
 import { diagnosticErrorDetails } from "@/src/diagnostics/connectionDiagnostics";
 import {
+  HTTPS_SIGNAL_ERROR_LEVEL,
+  isHttpsSignalErrorResponse,
   isHttpsSignalPollResponse,
   isHttpsSignalEvent,
+  type HttpsSignalClientError,
   type HttpsSignalPollRequest,
   type HttpsSignalPublishRequest,
 } from "@/src/signal/httpsSignalProtocol";
@@ -17,7 +20,19 @@ import {
 type HttpsSignalTransportOptions = SignalProviderOptions & {
   participantId: string;
   secret: string;
+  onClientError: (error: HttpsSignalClientError) => void;
 };
+
+class HttpsSignalRequestError extends Error {
+  readonly name = "HttpsSignalRequestError";
+
+  constructor(
+    readonly status: number,
+    readonly clientError: HttpsSignalClientError,
+  ) {
+    super(clientError.message);
+  }
+}
 
 export function createHttpsSignalTransport({
   roomId,
@@ -26,6 +41,7 @@ export function createHttpsSignalTransport({
   onMessage,
   onState,
   onDiagnostic,
+  onClientError,
 }: HttpsSignalTransportOptions): SignalProvider {
   const cipher = createJsonCipher(`${secret}:twoonly-signal:v1`);
   let state: SignalProviderState = "connecting";
@@ -34,6 +50,7 @@ export function createHttpsSignalTransport({
   let active = false;
   let publishOnlyActive = false;
   let disposed = false;
+  let terminalError = false;
   let polling = false;
   let pollTimer: number | undefined;
   let pollGeneration = 0;
@@ -55,11 +72,44 @@ export function createHttpsSignalTransport({
       credentials: "same-origin",
       signal: AbortSignal.timeout(SIGNAL_POLICY.httpsRequestTimeoutMs),
     });
-    if (!response.ok) throw new Error(`HTTPS fallback returned ${response.status}`);
-    return await response.json() as unknown;
+    const responseBody = await response.json().catch(() => undefined) as unknown;
+    if (!response.ok) {
+      if (isHttpsSignalErrorResponse(responseBody)) {
+        throw new HttpsSignalRequestError(response.status, responseBody.error);
+      }
+      throw new Error(`HTTPS fallback returned ${response.status}`);
+    }
+    return responseBody;
   }
 
   function fail(code: string, message: string, error: unknown) {
+    if (error instanceof HttpsSignalRequestError) {
+      const { clientError } = error;
+      if (clientError.level === HTTPS_SIGNAL_ERROR_LEVEL.terminal) {
+        terminalError = true;
+        active = false;
+        publishOnlyActive = false;
+        stopPolling();
+      }
+      updateState("unavailable");
+      onClientError(clientError);
+      onDiagnostic({
+        stage: "signal",
+        code: `signal.https.${clientError.code}`,
+        level: clientError.level === HTTPS_SIGNAL_ERROR_LEVEL.terminal ? "error" : "warn",
+        message: clientError.message,
+        details: {
+          provider: "https",
+          status: error.status,
+          errorLevel: clientError.level,
+          retryable: clientError.retryable,
+          expectedProtocol: clientError.expectedProtocol,
+          receivedProtocol: clientError.receivedProtocol,
+        },
+        dedupeKey: `https-${clientError.code}`,
+      });
+      return;
+    }
     updateState("unavailable");
     onDiagnostic({
       stage: "signal",
@@ -84,6 +134,7 @@ export function createHttpsSignalTransport({
   }
 
   function beginPolling() {
+    if (terminalError) return;
     stopPolling();
     polling = true;
     pollIndex = 0;
@@ -120,6 +171,7 @@ export function createHttpsSignalTransport({
     try {
       const body = await post({
         action: "poll",
+        protocol: SIGNAL_POLICY.protocolVersion,
         roomId,
         participantId,
         cursor,
@@ -157,7 +209,7 @@ export function createHttpsSignalTransport({
       });
     },
     send(message) {
-      if (!started || (!active && !publishOnlyActive) || disposed) return;
+      if (!started || (!active && !publishOnlyActive) || disposed || terminalError) return;
       if (active && message.type === "wake" && !polling) beginPolling();
       const generation = pollGeneration;
       void cipher.encrypt(message).then(async (payload) => {
@@ -165,6 +217,7 @@ export function createHttpsSignalTransport({
         const sentAt = Date.now();
         await post({
           action: "publish",
+          protocol: SIGNAL_POLICY.protocolVersion,
           roomId,
           senderId: participantId,
           signalId: message.signalId,
@@ -193,7 +246,7 @@ export function createHttpsSignalTransport({
       void acceptEvent(value);
     },
     setNegotiationActive(next) {
-      if (disposed || !started || active === next) return;
+      if (disposed || !started || terminalError || active === next) return;
       active = next;
       stopPolling();
       if (active) {
@@ -201,7 +254,7 @@ export function createHttpsSignalTransport({
       }
     },
     setPublishOnlyActive(next) {
-      publishOnlyActive = next;
+      if (!terminalError) publishOnlyActive = next;
     },
     dispose() {
       disposed = true;

@@ -126,6 +126,15 @@ export class WebRtcSession {
     }, RTC_POLICY.signalWarningDelayMs);
   }
 
+  onSignalTerminal(message: string) {
+    if (this.phase === "disposed" || this.channel?.readyState === "open") return;
+    this.clearTimer("signalWarning");
+    this.clearTimer("reconnect");
+    this.signalWarningShown = false;
+    this.cancelWakeCampaign();
+    this.show("disconnected", "信令请求已停止", message);
+  }
+
   handleSignal = (signal: SignalMessage) => {
     this.signalQueue = this.signalQueue
       .then(() => this.processSignal(signal))

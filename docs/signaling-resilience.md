@@ -13,6 +13,7 @@ TwoOnly 的聊天正文走 WebRTC DataChannel，但新的 PeerConnection 仍需�
 | 共享短时队列 | Upstash Redis Stream，由 Vercel 服务端访问 |
 | 客户端策略 | Supabase 主用；HTTPS / Redis 只在明确故障时有界启用 |
 | 重复处理 | 每次发送生成 `signalId`，进入 WebRTC 状态机前去重 |
+| HTTPS 兼容性 | publish / poll 外层携带 `protocol`；旧版本在 Redis 之前收到 426 |
 | HTTPS 信令内容 | 使用邀请 fragment 派生的独立 AES-GCM 密钥加密 |
 | 队列边界 | 每房间约 128 条，最后一次写入 180 秒后过期 |
 | 聊天正文 | 仍然只走 WebRTC DataChannel，不进入信令队列 |
@@ -53,7 +54,24 @@ POST /api/signal
 | `publish` | 写入一条加密信令 |
 | `poll` | 从上一个 Redis Stream cursor 继续读取 |
 
-Route Handler 会校验同源请求、Content-Type、请求大小、room/participant/signal ID 和 cursor。它不会接收 URL fragment，也无法解密 payload。Redis Stream 使用服务端生成的单调 cursor，客户端不依赖本机时间排序。
+Route Handler 会校验同源请求、Content-Type、请求大小、外层 `protocol`、room/participant/signal ID 和 cursor。它不会接收 URL fragment，也无法解密 payload。版本号必须放在加密 payload 外面，服务端才能在任何 Redis 读写之前拒绝旧客户端。Redis Stream 使用服务端生成的单调 cursor，客户端不依赖本机时间排序。
+
+缺少版本号或版本不匹配时，端点返回 HTTP 426：
+
+```json
+{
+  "error": {
+    "code": "client_upgrade_required",
+    "level": "terminal",
+    "retryable": false,
+    "message": "当前页面版本过旧，请刷新页面后重试。",
+    "expectedProtocol": 4
+  },
+  "requestId": "..."
+}
+```
+
+新版客户端收到 `terminal` 后会停止当前 HTTPS 调度并提示刷新；临时后端故障返回 `recoverable`，仍受原有重试窗口约束。旧 v3 页面不理解这份响应，可能继续请求 Vercel，但这些请求不再进入 Redis。
 
 v4 正常情况下只使用 Supabase；HTTPS / Redis 不启动。只有 Supabase 明确返回错误或超时后，客户端才进入一次最长约 25 秒、最多 7 次读取的降级窗口；Wake 本身只在 `0 / 1 / 3 / 7` 秒发送。Supabase 恢复或 DataChannel 打开后立即停止降级读取。
 
@@ -83,7 +101,7 @@ curl https://twoonly-chat.vercel.app/api/signal
 配置完成时应返回：
 
 ```json
-{"ok":true,"configured":true,"bridgeConfigured":true}
+{"ok":true,"protocol":4,"configured":true,"bridgeConfigured":true}
 ```
 
 `configured:true` 只证明 Redis 变量存在，`bridgeConfigured:true` 只证明 Supabase Bridge 变量存在。真正可用还要看到浏览器日志中的 `signal.https.send.ack`，以及另一端通过 `https` provider 收到 Wake。
@@ -124,6 +142,7 @@ curl https://twoonly-chat.vercel.app/api/signal
 | Supabase 对一方不可达 | 双方通过 HTTPS 完成 Hello 和协商 |
 | Supabase 对双方不可达 | 双方通过 HTTPS 完成握手 |
 | Redis 未配置或故障 | HTTPS 返回 503/502；Supabase 正常时仍能连接 |
+| v3 或缺少外层版本号 | HTTPS 返回 426；Redis 不产生读写 |
 | DataChannel 建立后 Supabase 中断 | 聊天继续；不恢复无意义轮询 |
 | DataChannel 断开且 Supabase 仍不可达 | HTTPS 轮询恢复并完成新一轮协商 |
 | 同一信令从两条通道到达 | 只进入 `WebRtcSession` 一次 |

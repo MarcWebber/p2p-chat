@@ -200,6 +200,9 @@ export class RoomRuntime {
           secret: this.secret,
           onMessage: session.handleSignal,
           onDiagnostic: this.diagnostics.report,
+          onClientError: (error) => {
+            if (error.level === "terminal") session.onSignalTerminal(error.message);
+          },
           onStatus: (status) => {
             if (status === "subscribed") session.onSignalReady();
             else session.onSignalUnavailable();

@@ -1,231 +1,127 @@
-# TwoOnly 项目复盘：真正费时间的不是聊天框
+# 34 万条 Redis 命令之后
 
-这个项目从一个很小的想法开始：做一个可以快速部署、只允许两个人使用的 P2P 加密聊天，支持文字、图片、语音，还能在本机保留一点历史。
+TwoOnly 是一个只允许两位固定成员进入的浏览器聊天工具。服务端帮助双方交换建连信令，聊天正文经过 AES-GCM 加密后走 WebRTC DataChannel，本机历史留在 IndexedDB。线上版本可以在 [twoonly-chat.vercel.app](https://twoonly-chat.vercel.app) 打开。
 
-回头看，UI 和消息列表反而不是最难的部分。真正决定“能不能用”的，是信令能否恢复、TURN 是否真的走通、密钥是否留在正确边界，以及部署环境是否和本地一致。
+2026 年 8 月，Upstash 控制台已经记下 338,418 条命令，其中有 203,446 次读取和 134,972 次写入。TwoOnly 当时还没有与这个数字相称的消息量。更奇怪的是，聊天正文根本不经过 Redis。双方连上以后，文字、图片、语音和文件都由 WebRTC DataChannel 传输。
 
-## 最终交付是什么
+顺着 `/api/signal` 往浏览器里查，找到了三个没有停下来的定时任务。它们都在等同一件事：另一个人上线。
 
-当前生产地址：<https://twoonly-chat.vercel.app>
+## 页面挂着不动，请求仍在增加
 
-| 能力 | 最终状态 |
-| --- | --- |
-| 双人房间 | v3 每房间 P-256 成员签名；首个接收者占第二席，空房或断线后也不转让 |
-| 文字 / 图片 / 语音 / 文件 | 图片最大 100 MB；文件传输标记 Beta；大附件使用分块加密和 DataChannel 背压 |
-| 实时链路 | WebRTC DataChannel |
-| 信令 | Supabase Realtime + 同源 Vercel HTTPS 双路信令 |
-| NAT 穿透 | STUN + Cloudflare TURN 兜底 |
-| 应用加密 | AES-GCM，每条消息独立 IV |
-| 本地历史 | 每设备、每房间最多 200 条密文；IndexedDB 同时保存房间专属成员凭证 |
-| 断线恢复 | 自动重新握手 + 手动“立即重连” |
-| 部署 | Next.js on Vercel，TURN Key 仅在服务端 |
+旧版 protocol v3 会同时使用 Supabase Realtime 和 Vercel HTTPS。WebRTC 尚未连通时，浏览器每 1.5 秒向 Supabase 发送一次 Hello，每 5 秒向 HTTPS 路径再发一次，还要每 1.2 秒读取 Redis Stream。
 
-## 项目是怎么一步步变得“可用”的
-
-```mermaid
-timeline
-  title TwoOnly 演进
-  最小原型 : 单页完成建房、邀请和 DataChannel
-  可聊天 : 加入文字、图片、语音与本地密文历史
-  可维护 : 从大型单文件拆成 chat / crypto / signal / webrtc / storage / ui
-  可恢复 : 增加 negotiationId、信令队列和自动重新握手
-  可跨网 : 接入 Supabase Realtime 信令
-  可容灾 : 增加 Vercel HTTPS + Redis Stream 密文信令
-  可兜底 : 接入 Cloudflare TURN 短时凭证
-  可部署 : 持久化 Vercel Production 环境变量并完成线上验收
-  更对等 : protocol v2、双方 Hello、确定性 Offer 选举与 epoch 隔离
-  更私密 : protocol v3、房间专属成员签名与永久双席
-```
-
-### 第一阶段：能连上，不等于架构成立
-
-最初所有逻辑放在一个大组件里，创建房间、加密、Supabase、PeerConnection、UI 和录音互相引用。它确实能快速验证想法，但任何连接状态变化都会穿过整份文件。
-
-模块化重构以后，边界变成：
-
-```mermaid
-flowchart TD
-  UI["src/ui"] --> CHAT["src/chat"]
-  CHAT --> ROOM["src/room"]
-  CHAT --> CRYPTO["src/crypto"]
-  CHAT --> STORAGE["src/storage"]
-  CHAT --> SIGNAL["src/signal"]
-  CHAT --> WEBRTC["src/webrtc"]
-  CHAT --> MEDIA["src/media"]
-  WEBRTC --> PROTOCOL["src/protocol"]
-```
-
-最大的收益不是文件变短，而是可以准确说出：
-
-- Signal 只传信令，不懂聊天正文；
-- WebRTC 只传密文，不持有 AES 密钥；
-- Storage 只存密文，不自行解密；
-- UI 只调控制器，不直接操作 Supabase 和 PeerConnection。
-
-当前基线见 [代码规模与复杂度](code-metrics.md)。复杂度主要集中在信令输入校验、HTTPS 轮询和 WebRTC 协商状态机；这些边界应继续按状态与职责清理，而不是单纯压缩行数。
-
-## 这次遇到的几个真实问题
-
-### 1. 本地模拟能用，外部用户不能用
-
-早期实现曾为同浏览器双标签页保留 `BroadcastChannel` 信令。它绕开 Supabase，导致本地成功无法证明 Realtime WebSocket 或跨设备网络成立。这个伪 fallback 后来被完整删除。项目先统一使用 Supabase，随后增加真正可跨设备的同源 Vercel HTTPS 路径：浏览器从启动起把同一条信令双发到 Supabase 和 `/api/signal`，后者只把 AES-GCM 密文短暂写入 Redis Stream。
-
-跨设备需要至少三件事同时正确：
-
-1. Supabase Realtime 或 Vercel HTTPS 至少一条信令链路可用；
-2. 两端确实收到彼此的 Hello、Offer/Answer 和 ICE Candidate；
-3. ICE 最终选出可用 Candidate Pair 并打开 DataChannel。
-
-这次经验很直接：**本地页面能跑不是跨网络 E2E。**以后验收必须明确区分静态检查、双浏览器、不同设备、不同网络和生产环境。
-
-### 2. 信令恢复了，双方却不会重新握手（v1 固定角色协议）
-
-WebSocket 自动重连只会恢复“联系渠道”，不会自动重建已经失败的 PeerConnection。最初缺少一套完整的重协商协议，导致断开后双方都在等对方先动。
-
-当时 v1 仍采用固定房主/访客角色，最终修复包含：
-
-- 访客恢复周期性 `hello`；
-- 房主针对同一 senderId 重新生成 Offer；
-- `createOffer({ iceRestart: true })`；
-- 新协商生成新 `negotiationId`；
-- 旧 Candidate 和旧 Answer 被过滤；
-- 800 ms 自动重试和手动重连共用同一入口。
-
-这件事说明：**重连不是某个按钮，而是一套双端一致的状态机。**
-
-### 3. 配了 STUN，严格网络还是失败
-
-STUN 只能帮忙发现映射，并不能保证 NAT 允许对端使用这个映射。没有 TURN 时，对称 NAT、企业防火墙和 UDP 受限网络仍然会失败。
-
-项目后来增加 `/api/turn-credentials`，由 Vercel 服务端用 Cloudflare 长期 Token 生成短时凭证。浏览器拿到的是临时 `iceServers`，长期 Token 不进入前端包。
-
-验证时不能只看“接口返回成功”。完整证据必须继续检查 relay candidate、实际选中的 Candidate Pair、双向字节和服务端流量。当前最终浏览器回归环境出现过 TURN 701 超时，因此这里只确认凭据服务已经配置，不把它写成“所有网络的 relay 已验证”。
-
-### 4. 本地接口正常，线上却返回 403
-
-Route Handler 最初用请求 URL 的内部 Origin 和浏览器 `Origin` 直接比较。在 Vercel 代理链路里，内部 host/protocol 与公开域名可能不同，于是同源请求被误杀。
-
-修复方式不是关闭校验，而是根据 `x-forwarded-host`、`host`、`x-forwarded-proto` 重建公开 Origin，同时拒绝明确的 `cross-site` 请求。
-
-这类问题的教训是：**部署平台上的请求经过代理，安全校验必须理解代理头，但也不能盲目信任任意客户端伪造的拓扑。**当前实现适合 Vercel 受控代理链路；若迁移到自管 Nginx，应重新确认可信代理边界。
-
-### 5. 部署成功了，TURN 仍然是 503
-
-第一次部署虽然 `READY`，但环境变量只是跟随某次部署上传，并没有持久保存到指定项目的 Production Environment。新 Function 找不到 `CLOUDFLARE_TURN_*`，因此正确地返回了 `turn_not_configured`。
-
-最终在 `marcwebbers-projects/twoonly-chat` 中持久保存了：
-
-- `CLOUDFLARE_TURN_KEY_ID`；
-- `CLOUDFLARE_TURN_API_TOKEN`；
-- Supabase URL；
-- Supabase publishable key；
-- 正式站点 URL。
-
-随后强制生产部署，线上首页和 TURN 接口均为 200。旧部署的 503 仍会出现在一小时日志窗口里，所以排查日志时必须按 deployment ID 区分，而不能只看项目级时间范围。
-
-### 6. Guest 显示已连接，Host 却卡在自动重连（v1 历史故障）
-
-这不是 TURN “只连通了一边”，而是客户端把一次瞬时 `RTCPeerConnection.disconnected` 立即写进 UI；连接在重连定时器触发前恢复后，定时器因为 DataChannel 仍为 `open` 而直接返回，却没有把 Host 状态恢复为 `connected`。
-
-修复后，瞬时断开先进入 2.5 秒波动确认期；PeerConnection 或 DataChannel 恢复时统一清理重连定时器并重新标记连接成功，持续断开才创建新一轮协商。同时，TURN 状态改为读取实际选中的 Candidate Pair，而不是只要候选池中出现过 relay 就显示正在中继。
-
-### 7. 固定角色让同一条链接变得不对等
-
-v1 的创建页地址带 `role=host`，复制按钮生成 `role=guest`。这套模型能快速完成 Offer/Answer，但也埋下了两个产品级陷阱：用户直接复制地址栏时，两个页面会同时成为 Host，没人发送 Hello；两个页面都打开 Guest 链接时，又没人创建 Offer。协议正确性依赖用户拿到“正确角色”的 URL，不够稳健。
-
-v2 把这层角色彻底拿掉：
-
-- 新链接统一为 `?room=<id>#<secret>`；当前邀请状态不再保存 role 字段；
-- 每次页面加载生成随机 `participantId`，双方订阅成功后都广播 protocol v2 Hello；
-- 两端比较 participant ID 字符串，较小者只是本轮临时 Offer/DataChannel 发起方；通道打开后双方完全对等；
-- local/remote epoch 区分重连轮次，`negotiationId` 区分具体协商；Answer 和 Candidate 必须同时匹配这些字段；
-- 早到的 Candidate 按参与者、epoch 和 negotiation ID 分桶，远端描述就绪后只冲刷当前桶；
-- 两端都持有运行时 peer lock，已有会话会拒绝第三页，但这仍不是服务端身份或持久席位；
-- 消息 UI 改用 `self / peer`，方向随密文记录保存在 IndexedDB，不再保留旧消息方向兼容路径。
-
-这个改动带来的最大收益不是少了一个 URL 参数，而是让“谁先发 Offer”从长期身份降级为一次协商里的确定性临时职责。排障时也不再问“哪边是 Host”，而是看两端 Hello、`peer.elected`、epoch 和 negotiation ID 是否一致。
-
-后续 v3 在这套对等协商之上增加了独立的成员准入层：创建者公钥随邀请 Fragment 发送，首个持有完整 Room Secret 且签名有效的接收者通过 IndexedDB 事务占据第二席；所有信令继续签名，断线与 PeerLock 超时只允许原成员的新页面实例恢复，不再允许一把新公钥接替。`participantId` 仍只决定本轮谁发 Offer，不是长期权限角色。
-
-## 最终验收是怎么做的
-
-```mermaid
-flowchart LR
-  STATIC["typecheck / build"] --> LOCAL["双浏览器 / 双设备"]
-  LOCAL --> RELAY["强制 TURN relay"]
-  RELAY --> DEPLOY["Vercel Production"]
-  DEPLOY --> HTTP["首页与 API 200"]
-  HTTP --> LOGS["部署级日志无 error / warning / 5xx"]
-```
-
-最后一轮证据包括：
-
-- TypeScript 检查通过；
-- Next.js 生产构建通过；
-- 完全关闭 Supabase 配置后，两个浏览器仅通过 Vercel HTTPS 模拟端点完成握手；
-- HTTPS-only 模式下双向消息成功，单端刷新后自动重新握手并继续收发；
-- 生产环境在 Supabase 不可用时，仅通过 Vercel HTTPS 信令完成双端握手；
-- HTTPS-only 模式下双向加密消息成功，单端刷新后自动重握手；
-- 生产首页 HTTP 200；
-- 生产凭证接口 HTTP 200；
-- `/api/signal` 返回 `configured:true`，真实 Redis publish/poll 成功；
-- 验收窗口内 `/api/signal` 31 次请求均为 200，Vercel Runtime Error 为 0；
-- 仓库没有跟踪任何 Cloudflare 长期 Token。
-
-这不等于“已经在全国所有运营商完成 SLA 级验证”。它证明的是：代码、生产配置、HTTPS-only 信令、双向 DataChannel 和刷新重连已经跑通。TURN relay 与中国大陆稳定性仍需要真实设备、不同网络和运营商测试。
-
-## 安全边界：我们保护了什么
-
-### 已经做到
-
-- 聊天正文进入网络前先经过 AES-GCM；
-- DataChannel 自身还有 DTLS；
-- 本机历史只保存密文信封；
-- 每条消息独立随机 IV；
-- Cloudflare 长期 Token 只在 Vercel 服务端；
-- URL Fragment 中的 secret 不随页面 HTTP 请求发送；
-- 每个房间有独立的 P-256 成员密钥，全部 v3 信令签名同时绑定 Room ID、Room Secret 与信令内容；
-- 首个接收者原子占第二席，两席公钥持久化后不会因断线、空房或 PeerLock 超时转让；
-- 安全码可以通过另一个可信渠道人工核对。
-
-### 没有做到
-
-- 没有账号、全局设备身份或跨设备找回；成员私钥只是 IndexedDB 中的房间专属可导出材料，不是 MAC、浏览器指纹或硬件密钥；
-- 完整邀请链接在第二席位首次确认前仍可能被泄露者抢先使用，也包含能够解密正文的会话秘密；
-- 公共 Supabase topic 不是私有订阅授权；成员签名阻止陌生人进入协商，但不能阻止元数据观察和拒绝服务；
-- 清站点数据、删除房间或换设备会丢失本机成员凭证，旧邀请不能恢复已经锁定的席位；
-- 没有前向保密的应用层密钥轮换；
-- 没有离线投递、跨设备历史或删除同步；聊天室资料和昵称头像只在双方在线后以加密控制消息收敛；
-- TURN、Supabase 和网络运营者仍能观察 IP、连接时间和流量大小等元数据。
-
-“端到端加密”不能只看算法名字，还要看密钥如何分发、身份如何确认、元数据谁能看到。TwoOnly 当前更准确的描述是：**共享随机会话秘密驱动的应用层加密 P2P 聊天 MVP。**
-
-## 如果继续开发，优先级应该是什么
-
-项目在这里结束，但如果未来重新打开，我会按这个顺序继续：
-
-1. 私有信令频道、一次性邀请核销和安全的成员密钥迁移；
-2. 大附件断点续传、内容摘要校验和可选的加密持久化；
-3. TURN 多地域与连接成功率监控；
-4. 加密离线信箱和消息确认；
-5. 大陆合规托管、自有域名和三网实测；
-6. 再考虑更丰富的 UI、表情和文件能力。
-
-原因很简单：一款聊天工具最先要保证的是“连得上、连回来、发得出、看不见”，而不是按钮更多。
-
-## 最后的结论
-
-TwoOnly 没有试图成为一个完整即时通讯产品。它完成的是一条很清楚的技术闭环：
+HTTPS Hello 写入 Redis 时会执行 `XADD` 和 `EXPIRE`。一个页面守着一个没有回应的房间，连续运行 30 天，仅 Redis 部分就会得到下面这组数。
 
 ```text
-邀请链接
-→ 托管信令
-→ ICE / STUN / TURN
-→ WebRTC 双工 DataChannel
-→ 浏览器本地 AES-GCM
-→ 本地密文历史
-→ 断线后重新握手
-→ Vercel 生产部署
+读取：30 × 24 × 3600 ÷ 1.2 = 2,160,000
+写入：30 × 24 × 3600 ÷ 5 × 2 = 1,036,800
+合计：3,196,800 条命令
 ```
 
-它最有价值的部分，不是某一段 API 调用，而是这些边界在真实部署和故障中都被走过一遍。到这里，这个项目可以正式收尾了。
+这是根据旧版常量算出的长期上限，不表示控制台里的 338,418 条命令全部来自同一个页面。它解释了数字为什么会一直涨。房间保存得越多，打开的标签页越多，浏览器创建的信令连接也越多。对方离线一天，页面就白问一天。
+
+把五秒改成一分钟只能推迟额度耗尽。服务端限流也只能拒绝已经到达的请求，浏览器里的定时器仍会继续运行。要停下这批空转请求，等待本身必须结束。
+
+## 新代码停了，旧页面没停
+
+第一次改造上线后，Upstash 的累计值还是从 338,418 走到了免费额度的 500,000。新页面已经不再无限轮询，只能继续检查那些在发布前打开、一直没有刷新的标签页。
+
+部署会替换服务端和以后加载的静态资源，不会改掉旧标签页内存里正在执行的 JavaScript。更麻烦的是，当时 v3 与 v4 发给 `/api/signal` 的外层请求长得一样。一个旧 poll 只有下面几个字段：
+
+```json
+{
+  "action": "poll",
+  "roomId": "...",
+  "participantId": "...",
+  "cursor": "0-0"
+}
+```
+
+v4 的 `protocol: 4` 放在加密后的信令正文里。服务端只负责暂存密文，没有邀请秘密，也就读不到这个版本号。旧页面发来的 poll 会照常执行 `XRANGE`，publish 也会照常执行 `XADD` 和 `EXPIRE`。等新浏览器解密后发现协议不兼容，Redis 命令早已发生。
+
+截图当时还剩 161,582 条免费命令。按一个旧页面每天 106,560 条的上限计算，约 36.4 小时就能用完。这项计算不能证明最后的用量只来自一个旧页面，却与额度很快见底的时间尺度相符。
+
+## 七秒后，停止呼叫
+
+protocol v4 删除了周期 Hello。浏览器在上线、恢复网络、重新订阅 Supabase 或 WebRTC 断开时创建一个新的 `wakeSeq`，并在 0、1、3、7 秒发送 Wake。时间写在 `src/config/policy.ts`。
+
+```ts
+wakeRetryDelaysMs: [0, 1_000, 3_000, 7_000]
+```
+
+四次发送共用一个 `wakeSeq`，每次传输仍有独立的 `signalId`。接收方把已经处理过的序号保存在 IndexedDB。更大的序号会启动新一轮协商；相同序号只补发 ACK；较小的序号已经过期，不能再拉起 PeerConnection。
+
+只要 ACK 到达，`WebRtcSession.cancelWakeCampaign` 就会清掉尚未执行的定时任务。DataChannel 打开、页面交出网络租约或会话销毁时，也会调用同一个函数。四次都没有回应，本轮联系到此结束。
+
+![同一轮 Wake 的序号判断](assets/wake-signaling/04-wake-sequence-decision.png)
+
+第一次 Wake 没有延迟，在线重连仍会立刻开始。对方长期离线时，当前页面七秒后便不再发送。等对方重新打开网页，它会创建自己的 Wake，联系仍由刚上线的一端恢复。
+
+## Redis 平时不再启动
+
+浏览器创建信令传输时仍会准备 Supabase 和 HTTPS 两个 provider。启动顺序已经改变。`src/signal/signalTransport.ts` 先连接 Supabase。订阅成功后，HTTPS provider 保持休眠，不会访问 `/api/signal`。
+
+Supabase 明确报告错误或订阅失败，`ensureHttpsStarted` 才会打开备用路径。Redis 读取也不再循环。当前配置安排了七次读取，等待时间依次为 0、1、2、4、5、6、7 秒。按实际发生时刻计算，请求约在第 0、1、3、7、12、18、25 秒到达，随后停止。
+
+```ts
+httpsFallbackPollDelaysMs: [0, 1_000, 2_000, 4_000, 5_000, 6_000, 7_000]
+```
+
+只有一端连不上 Supabase 时，Vercel 会把它提交的加密 Wake 暂存在 Redis，再通过 Supabase REST Broadcast 交给仍然在线的一端。健康端在 30 秒内把 ACK、Offer 和 ICE 发回 HTTPS。整个过程不要求健康端长期读取 Redis。
+
+Redis Stream 最多保留约 128 条信令，末次写入 180 秒后过期。保存内容已经用邀请秘密加密。聊天正文依旧只在两个浏览器之间传输。
+
+![Supabase 正常时 Redis 保持休眠](assets/wake-signaling/01-overall-architecture.png)
+
+## 多开页面只留一个联网者
+
+周期请求消失以后，同一个浏览器多开标签页仍会造成重复订阅。TwoOnly 会在 IndexedDB 中生成一个随机安装 ID。它只存在于当前浏览器配置目录，不读取 MAC 地址，也不采集指纹。
+
+每个标签页都可以申请网络租约。持有者每 5 秒续期，15 秒没有续期，其他页面便可以接手。租约里的 fence 会阻止旧持有者恢复后继续联网。页面触发 `pagehide` 时主动释放租约；异常关闭则交给过期时间处理。
+
+只有拿到租约的标签页会恢复房间运行时。多个房间仍可同时在线，底层共用一个 Supabase client。安装 ID 只负责同一浏览器里的协调，不能代替房间成员密钥，也不能用于换设备找回聊天。
+
+## 服务端也要认识版本
+
+这次修正把协议号放到了 HTTPS 请求外层。publish 和 poll 都必须携带当前的 `protocol`，Route Handler 解析 JSON 后先核对它，再检查 Redis 配置并进入存储函数。
+
+```json
+{
+  "action": "poll",
+  "protocol": 4,
+  "roomId": "...",
+  "participantId": "...",
+  "cursor": "0-0"
+}
+```
+
+没有版本号或版本不匹配的请求会收到 HTTP 426。返回内容不再只有一个字符串，客户端可以据此决定是否还值得重试。
+
+```json
+{
+  "error": {
+    "code": "client_upgrade_required",
+    "level": "terminal",
+    "retryable": false,
+    "message": "当前页面版本过旧，请刷新页面后重试。",
+    "expectedProtocol": 4
+  },
+  "requestId": "..."
+}
+```
+
+`terminal` 表示继续发送同一格式的请求不会变好。新版客户端会停止这条 HTTPS 调度，取消尚未执行的 Wake，并把刷新提示显示在聊天界面。`recoverable` 留给 Redis 一类临时后端故障，原来的有界重试仍可继续。`retryable` 单独保留在响应里，让没有 TypeScript 类型信息的调用方也能直接作出判断。
+
+旧 v3 页面不认识这份错误，仍可能每 1.2 秒访问一次 Vercel。现在这些请求会在 Redis 之前被挡住，Upstash 不再为它们记账。版本闸门保护的是 Redis 免费额度，无法远程关掉别人浏览器里已经运行的旧代码。
+
+## 还要继续看数字
+
+| 页面与网络状态 | Redis 行为 |
+| --- | --- |
+| 新客户端，Supabase 健康 | HTTPS 保持休眠，正常路径为 0 条命令 |
+| 旧客户端继续轮询 | `/api/signal` 返回 426，不进入 Redis |
+| 新客户端确认 Supabase 故障 | HTTPS 在约 25 秒的窗口内有限读写 |
+
+事件唤醒改动收录在提交 [`1d7b251`](https://github.com/MarcWebber/p2p-chat/commit/1d7b251e1837e39fc476db5029339e6e0c618f40)。项目留下的验收记录显示，Supabase 正常时，生产回归没有产生 `/api/signal` 请求。这只能证明新客户端的正常路径已经绕开 Redis，不能证明 500,000 条命令全部来自旧页面。要分清剩余来源，仍需把 Upstash 分时数据与 Vercel 的 `/api/signal` 日志放在一起看。
+
+这道闸门也不是限流。修改过的客户端可以伪造 `protocol: 4`，Supabase 心跳异常也可能让多个房间一起进入短时降级。真正要防恶意调用，还得按 IP、房间和总预算做限流与熔断。眼下先把最确定的漏洞堵住：旧页面可以继续敲门，服务端不再替它打开 Redis。

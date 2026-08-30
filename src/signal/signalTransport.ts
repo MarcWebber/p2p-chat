@@ -7,6 +7,7 @@ import {
 } from "@/src/diagnostics/connectionDiagnostics";
 import { createHttpsSignalTransport } from "@/src/signal/httpsSignalTransport";
 import { createSupabaseSignalTransport } from "@/src/signal/supabaseSignalTransport";
+import type { HttpsSignalClientError } from "@/src/signal/httpsSignalProtocol";
 import {
   isSignalMessage,
   type RoutedSignalMessage,
@@ -23,6 +24,7 @@ type SignalTransportOptions = {
   secret: string;
   onMessage: (message: SignalMessage) => void;
   onStatus: (status: "subscribed" | "unavailable") => void;
+  onClientError: (error: HttpsSignalClientError) => void;
   onDiagnostic: ConnectionDiagnosticSink;
 };
 
@@ -70,6 +72,7 @@ export function createSignalTransport({
   secret,
   onMessage,
   onStatus,
+  onClientError,
   onDiagnostic,
 }: SignalTransportOptions) {
   const states = new Map<SignalProviderName, SignalProviderState>();
@@ -154,6 +157,7 @@ export function createSignalTransport({
     ...providerOptions("https"),
     participantId,
     secret,
+    onClientError,
   });
   let supabase: SignalProvider | null = null;
   try {
