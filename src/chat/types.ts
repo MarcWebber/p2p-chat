@@ -55,6 +55,7 @@ export type EncryptedWire = {
 
 export type ConversationSummary = {
   roomId: string;
+  unreadCount: number;
   lastOpenedAt: number;
   title: string;
   icon: string;

@@ -62,6 +62,7 @@ type RoomRuntimeOptions = {
   room: StoredRoom;
   localProfile: ProfileMetadata;
   onChange: (snapshot: RoomRuntimeSnapshot) => void;
+  onIncomingMessage: (roomId: string) => void;
   onRoomMetadata: (roomId: string, metadata: RoomMetadata) => void;
   onRoomMembership: (roomId: string, peerPublicKey: string) => Promise<RoomMembership | null>;
   onPeerProfile: (roomId: string, metadata: ProfileMetadata) => void;
@@ -447,8 +448,10 @@ export class RoomRuntime {
     }
     const message = { ...(payload as ChatMessage), author: "peer" } satisfies ChatMessage;
     if (!isSupportedMessage(message) || this.deletedMessageIds.has(message.id)) return;
+    const isNew = !this.snapshot.messages.some((current) => current.id === message.id);
     this.acceptPeerProfileFallback(message.profile);
     this.publish({ messages: mergeMessages(this.snapshot.messages, [message]) });
+    if (isNew) this.options.onIncomingMessage(this.roomId);
     try {
       await persistEncryptedMessage(this.roomId, wire, "peer");
     } catch {
@@ -482,6 +485,7 @@ export class RoomRuntime {
         transient: true,
       }]),
     });
+    this.options.onIncomingMessage(this.roomId);
   }
 
   private acceptAttachmentChunk(payload: Parameters<typeof decodeAttachmentChunk>[0]) {

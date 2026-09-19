@@ -111,6 +111,11 @@ export function ChatSidebar({
                     <small><i className={`status-dot ${room.connection}`} /> {room.preview}</small>
                   </span>
                 </button>
+                {room.unreadCount > 0 ? (
+                  <span className="unread-badge" aria-label={`${room.unreadCount} 条未读消息`}>
+                    {room.unreadCount > 99 ? "99+" : room.unreadCount}
+                  </span>
+                ) : null}
                 <button
                   className="conversation-settings"
                   type="button"

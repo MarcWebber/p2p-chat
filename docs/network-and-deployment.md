@@ -91,14 +91,15 @@ VPS + Socket.IO Room
 
 ## 为什么当前项目同时使用 Supabase 与 HTTPS 信令
 
-Supabase Realtime Broadcast 通过 WebSocket 转发低延迟事件；同源 `/api/signal` 则通过短轮询读取 Upstash Redis Stream。双方从页面加载起同时发送到两条路径，并用 `signalId` 去重，因此任何一条共同可达就能继续握手。Supabase 官方说明见 [Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast)。
+Supabase Realtime Broadcast 通过 WebSocket 转发低延迟事件，是当前主信令。Supabase 明确故障后，同源 `/api/signal` 才会在有限窗口内读写 Upstash Redis Stream。单边故障时，Vercel 还会把加密事件桥接到健康端的 Supabase channel。Supabase 官方说明见 [Realtime Broadcast](https://supabase.com/docs/guides/realtime/broadcast)。
 
 ```mermaid
 flowchart LR
   A["Browser A"] <-->|"WebSocket"| S["Supabase Realtime"]
   S <-->|"WebSocket"| B["Browser B"]
-  A <-->|"HTTPS poll / publish"| H["Vercel + Upstash"]
-  H <-->|"HTTPS poll / publish"| B
+  A -. "Supabase 故障时 publish / 有界 poll" .-> H["Vercel + Upstash"]
+  B -. "Supabase 故障时 publish / 有界 poll" .-> H
+  H -. "加密故障事件 bridge" .-> S
   A <==>|"WebRTC 密文"| B
 ```
 

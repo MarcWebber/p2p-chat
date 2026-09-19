@@ -6,11 +6,11 @@
 >
 > 目标协议版本：v4
 >
-> 已落地：v4 Wake/ACK、有界 `0/1/3/7s` 重试、持久化序号、浏览器安装 ID、单标签页网络租约、共享 Supabase client、Supabase 主通道与有界 Redis 冷备。服务端 Bridge、服务端多级限流和配额熔断仍是后续防滥用项。
+> 已落地：v4 Wake/ACK、有界 `0/1/3/7s` 重试、持久化序号、浏览器安装 ID、单标签页网络租约、共享 Supabase client、Supabase 主通道、有界 Redis 冷备和单边故障 Bridge。服务端多级限流和配额熔断仍是后续防滥用项。
 
 ## 1. 摘要
 
-TwoOnly 当前在 WebRTC 尚未连通时，会按固定周期发送 Supabase Hello，并通过 Vercel HTTPS 持续轮询 Redis。它能提高建连成功率，但资源成本与“等待时长 × 房间数 × 页面数”成正比：对方离线越久、浏览器标签页越多、保存的房间越多，用量越高。
+TwoOnly 的 v3 协议在 WebRTC 尚未连通时，会按固定周期发送 Supabase Hello，并通过 Vercel HTTPS 持续轮询 Redis。它提高了建连成功率，也让资源成本与“等待时长 × 房间数 × 页面数”一起增长：对方离线越久、浏览器标签页越多、保存的房间越多，用量越高。
 
 本 RFC 把信令改为**按事件唤醒**：
 

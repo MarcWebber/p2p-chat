@@ -37,6 +37,8 @@ export function ChatScreen(props: TwoOnlyChatController) {
           onOpenRoom={props.openStoredRoom}
           onEditRoom={setEditingRoomId}
           onProfileChange={props.updateProfile}
+          notificationStatus={props.notificationStatus}
+          onToggleNotifications={props.toggleNotifications}
         />
         <MessageList
           profile={props.profile}

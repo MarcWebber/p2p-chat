@@ -163,8 +163,7 @@ export function createSupabaseSignalTransport({
             details: { provider: "supabase", durationMs: Date.now() - sentAt },
             dedupeKey: `${message.type}-supabase-ack-${result}`,
           });
-          if (result === "ok") onState("ready");
-          else if (!disposed) onState("unavailable");
+          if (result !== "ok" && !disposed) onState("unavailable");
         })
         .catch((error: unknown) => {
           if (disposed) return;

@@ -37,7 +37,7 @@
   ·
   <a href="docs/README.md">阅读文档</a>
   ·
-  <a href="docs/project-retrospective.md">项目复盘</a>
+  <a href="docs/project-retrospective.md">用量复盘</a>
 </p>
 
 ---
@@ -203,7 +203,7 @@ TwoOnly 是共享随机会话秘密驱动的应用层加密 P2P 聊天，并为�
 | [常见问题与网络排障 FAQ](docs/faq.md) | 连不上、想定位 STUN/TURN/信令问题 |
 | [VPS、Socket.IO、Vercel 和 TURN](docs/network-and-deployment.md) | 想理解不同部署路线的取舍 |
 | [Supabase、Vercel 与部署运维](docs/deployment-operations.md) | 准备上线或维护生产环境 |
-| [项目最终复盘](docs/project-retrospective.md) | 想知道为什么做到这里、边界又在哪里 |
+| [34 万条 Redis 命令之后](docs/project-retrospective.md) | 想看固定轮询怎样改成事件唤醒 |
 
 ## 表情素材
 

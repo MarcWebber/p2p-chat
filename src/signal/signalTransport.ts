@@ -108,7 +108,7 @@ export function createSignalTransport({
         return;
       }
       if (name === "supabase" && state === "unavailable") {
-        emitStatus("unavailable");
+        emitStatus(states.get("https") === "ready" ? "subscribed" : "unavailable");
         ensureHttpsStarted();
         return;
       }

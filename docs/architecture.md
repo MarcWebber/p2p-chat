@@ -45,7 +45,7 @@ flowchart LR
   BP -. "候选地址发现 / 必要时中继" .-> ICE
 ```
 
-Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时 TURN 配置，并通过 `/api/signal` 提供同源 HTTPS 信令。Supabase 与 HTTPS 在 WebRTC 建连阶段双活；HTTPS payload 先由浏览器用邀请密钥加密，Redis 最多保留约 128 条并在 180 秒后过期。连接成功后，应用消息走 DataChannel，聊天正文不会写入 Supabase、Redis 或 Vercel Function。
+Vercel 提供静态网页与资源，通过 `/api/turn-credentials` 生成短时 TURN 配置，并通过 `/api/signal` 提供同源 HTTPS 信令。Supabase 是 WebRTC 建连的主通道；它明确故障后，HTTPS 才在有限时间内读写 Redis。HTTPS payload 先由浏览器用邀请密钥加密，Redis 最多保留约 128 条并在 180 秒后过期。连接成功后，应用消息走 DataChannel，聊天正文不会写入 Supabase、Redis 或 Vercel Function。
 
 ## 2. 运行时组件
 
@@ -191,7 +191,7 @@ twoonly/
 │   │   ├── httpsSignalTransport.ts        # 浏览器同源 HTTPS 信令
 │   │   ├── httpsSignalProtocol.ts         # HTTPS 请求/响应校验
 │   │   ├── serverSignalStore.ts           # 服务端 Redis Stream
-│   │   └── signalTransport.ts             # 双活聚合与去重
+│   │   └── signalTransport.ts             # 主备切换、桥接与去重
 │   ├── server/
 │   │   └── requestSecurity.ts      # Route 同源请求校验
 │   ├── storage/
@@ -218,7 +218,7 @@ twoonly/
 │   ├── README.md                   # 文档索引
 │   ├── field-guide.md              # WebRTC 原理与项目实战主线
 │   ├── network-and-deployment.md   # VPS、Socket.IO 与部署选择
-│   ├── project-retrospective.md    # 故障、验收与最终复盘
+│   ├── project-retrospective.md    # Redis 用量故障与事件唤醒复盘
 │   ├── architecture.md             # 本文
 │   ├── code-metrics.md             # 代码规模和复杂度基线
 │   ├── deployment-operations.md    # Supabase/Vercel/运维

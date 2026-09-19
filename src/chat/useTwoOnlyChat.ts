@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEv
 
 import { RoomRuntime, type RoomRuntimeSnapshot } from "@/src/chat/roomRuntime";
 import { createMessageReplyReference } from "@/src/chat/messageReply";
+import { createMessageNotifications, isReadingRoom, type NotificationStatus } from "@/src/chat/messageNotifications";
 import type {
   ChatMessage,
   ChatProfile,
@@ -105,6 +106,8 @@ export function useTwoOnlyChat() {
   const [networkOwner, setNetworkOwner] = useState(false);
   const [copiedRoomId, setCopiedRoomId] = useState("");
   const [bootstrapDiagnostics] = useState(() => new ConnectionDiagnostics());
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>("off");
 
   const runtimesRef = useRef(new Map<string, RoomRuntime>());
   const profileMetadataRef = useRef(DEFAULT_PROFILE_METADATA);
@@ -112,6 +115,8 @@ export function useTwoOnlyChat() {
   const copyTimerRef = useRef<number | undefined>(undefined);
   const mountedRef = useRef(false);
   const networkOwnerTabIdRef = useRef("");
+  const notificationsRef = useRef<ReturnType<typeof createMessageNotifications> | null>(null);
+  const openRoomRef = useRef<(roomId: string) => void>(() => {});
   activeRoomIdRef.current = activeRoomId ?? "";
 
   const setRoomNotice = (roomId: string, notice: string) => {
@@ -121,6 +126,39 @@ export function useTwoOnlyChat() {
   };
 
   const setActiveNotice = (notice: string) => setRoomNotice(activeRoomIdRef.current, notice);
+
+  useEffect(() => {
+    const notifications = createMessageNotifications({
+      isReading: (roomId) => isReadingRoom(activeRoomIdRef.current, roomId),
+      onOpen: (roomId) => openRoomRef.current(roomId),
+      onUnread: setUnreadCounts,
+      onStatus: setNotificationStatus,
+      onNotice: (notice) => {
+        const runtime = runtimesRef.current.get(activeRoomIdRef.current);
+        if (runtime) runtime.setNotice(notice);
+        else setGlobalNotice(notice);
+      },
+    });
+    notificationsRef.current = notifications;
+    const readActive = () => {
+      notifications.refresh();
+      notifications.markRead(activeRoomIdRef.current);
+    };
+    window.addEventListener("focus", readActive);
+    document.addEventListener("visibilitychange", readActive);
+    window.addEventListener("storage", notifications.refresh);
+    return () => {
+      window.removeEventListener("focus", readActive);
+      document.removeEventListener("visibilitychange", readActive);
+      window.removeEventListener("storage", notifications.refresh);
+      notifications.dispose();
+      notificationsRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeRoomId) notificationsRef.current?.markRead(activeRoomId);
+  }, [activeRoomId]);
 
   const sendMessage = async (
     kind: MessageKind,
@@ -434,6 +472,7 @@ export function useTwoOnlyChat() {
       const runtime = new RoomRuntime({
         room,
         localProfile: profileMetadataRef.current,
+        onIncomingMessage: (roomId) => notificationsRef.current?.receive(roomId),
         onChange: (snapshot) => {
           if (!mountedRef.current) return;
           setRoomSnapshots((current) => ({ ...current, [snapshot.roomId]: snapshot }));
@@ -609,6 +648,7 @@ export function useTwoOnlyChat() {
       "已切换聊天，其他房间仍保持连接。",
     );
   };
+  openRoomRef.current = openStoredRoom;
 
   const submitText = (event: FormEvent) => {
     event.preventDefault();
@@ -764,6 +804,7 @@ export function useTwoOnlyChat() {
       const remainingRooms = storedRooms.filter((candidate) => candidate.roomId !== roomId)
         .map((candidate, order) => ({ ...candidate, order }));
       setStoredRooms(remainingRooms);
+      notificationsRef.current?.forget(roomId);
       setRoomSnapshots((current) => {
         const next = { ...current };
         delete next[roomId];
@@ -805,6 +846,7 @@ export function useTwoOnlyChat() {
       icon: room.icon ?? "2",
       connection: snapshot?.connection ?? "waiting",
       preview: messagePreview(snapshot?.messages.at(-1), snapshot?.connectionMode ?? "正在建立连接"),
+      unreadCount: unreadCounts[room.roomId] ?? 0,
     };
   });
 
@@ -884,6 +926,8 @@ export function useTwoOnlyChat() {
     safetyCode,
     activeRoomId: activeRoom?.roomId ?? "",
     conversations,
+    notificationStatus,
+    toggleNotifications: () => { void notificationsRef.current?.toggle(); },
     updateProfile,
     setDraft,
     replyToMessage,

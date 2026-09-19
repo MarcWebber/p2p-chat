@@ -218,6 +218,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .conversation-card.active { background: #dfeeff; }
 .conversation-card.drop-target { box-shadow: inset 0 -2px @blue; }
 .conversation-card:active { cursor: grabbing; }
+.unread-badge { min-width: 18px; padding: 2px 5px; flex: 0 0 auto; border-radius: 12px; color: white; background: #dc4545; font-size: 10px; line-height: 14px; text-align: center; }
 .conversation-drag { width: 18px; height: 40px; margin-left: 2px; padding: 0; flex: 0 0 auto; border: 0; color: #b3bbc4; background: transparent; cursor: grab; font-size: 13px; touch-action: none; user-select: none; }
 .conversation-open { min-width: 0; padding: 11px 3px 11px 2px; display: flex; align-items: center; gap: 9px; flex: 1; border: 0; background: none; cursor: pointer; text-align: left; }
 .conversation-avatar {
@@ -306,6 +307,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .status-dot.connecting { background: #f1a63c; }
 .status-dot.disconnected { background: #e56060; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
+.notification-button { width: 30px; height: 30px; padding: 5px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid @line; border-radius: 8px; color: #8c96a1; background: white; cursor: pointer; }
+.notification-button[aria-pressed="true"] { color: @blue-dark; border-color: #b6d9fa; background: @blue-soft; }
+.notification-button:disabled { opacity: 0.5; cursor: default; }
 .profile-menu {
   position: relative;
 
@@ -1055,6 +1059,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .landing-content { width: min(520px, calc(100vw - 32px)); grid-template-columns: 1fr; padding: 28px 0; }
   .chat-shell { grid-template-columns: 54px minmax(0, 1fr); }
   .chat-sidebar { display: none; }
+  .chat-main { grid-template-rows: auto minmax(0, 1fr) auto auto; }
+  .chat-header { min-height: 64px; padding-block: 10px; flex-wrap: wrap; gap: 8px; }
+  .header-actions { min-width: 0; flex-wrap: wrap; }
   .mobile-room-select { display: block; }
   .mobile-room-settings-button { display: inline-flex; }
   .message-list { padding: 22px 16px; }

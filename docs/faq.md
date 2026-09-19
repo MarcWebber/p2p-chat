@@ -273,7 +273,7 @@ URL fragment 中包含会话秘密和创建者公钥。fragment 通常不会随 
 - [WebRTC、双工通道与加密](webrtc-security.md)
 - [Supabase、Vercel 与部署运维](deployment-operations.md)
 - [Supabase + Vercel HTTPS 主备信令](signaling-resilience.md)
-- [TwoOnly 项目复盘](project-retrospective.md)
+- [34 万条 Redis 命令之后](project-retrospective.md)
 - [Cloudflare TURN 短时凭据](https://developers.cloudflare.com/realtime/turn/generate-credentials/)
 - [Cloudflare TURN Analytics](https://developers.cloudflare.com/realtime/turn/analytics/)
 - [Cloudflare TURN FAQ](https://developers.cloudflare.com/realtime/turn/faq/)

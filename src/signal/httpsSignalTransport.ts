@@ -147,6 +147,7 @@ export function createHttpsSignalTransport({
     if (!isHttpsSignalEvent(event) || event.publishedAt < acceptPublishedAfter) return;
     try {
       const message = await cipher.decrypt(event.payload);
+      if (disposed || terminalError) return;
       if (!isRoutedSignalMessage(message)
         || message.from !== event.senderId
         || message.signalId !== event.signalId) {
@@ -223,6 +224,7 @@ export function createHttpsSignalTransport({
           signalId: message.signalId,
           payload,
         });
+        if (disposed || terminalError || (!publishOnlyActive && (!active || generation !== pollGeneration))) return;
         updateState("ready");
         onDiagnostic({
           stage: "signal",
@@ -233,7 +235,7 @@ export function createHttpsSignalTransport({
           dedupeKey: `${message.type}-https-ack`,
         });
       }).catch((error: unknown) => {
-        if (disposed) return;
+        if (disposed || terminalError || (!publishOnlyActive && (!active || generation !== pollGeneration))) return;
         fail(
           "signal.https.send.failed",
           `HTTPS ${message.type} 信令发送失败`,
