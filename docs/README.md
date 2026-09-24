@@ -15,6 +15,7 @@ TwoOnly 是一个纯浏览器双人加密聊天项目。网页由 Next.js 构建
 
 ## 专题手册
 
+- [浏览器共享目录发布报告](shared-files-release-report.md)：状态审查、代码规模、双端验收截图和生产发布记录。
 - [系统架构与文件结构](architecture.md)：组件边界、消息流、双人限制和源码目录。
 - [代码规模与复杂度基线](code-metrics.md)：当前行数、目录分布、复杂度代理和重复统计方法。
 - [WebRTC、双工通道与加密](webrtc-security.md)：Offer/Answer、ICE、STUN/TURN、DataChannel、AES-GCM、分片、威胁边界。
