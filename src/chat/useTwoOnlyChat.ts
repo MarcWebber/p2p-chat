@@ -911,6 +911,8 @@ export function useTwoOnlyChat() {
 
   return {
     view: activeRoomId === undefined ? "loading" : activeRoom ? "chat" : "landing",
+    sharedFiles: runtimesRef.current.get(activeRoomId ?? "")?.sharedFiles,
+    files: activeSnapshot?.files,
     connection,
     connectionMode,
     messages,

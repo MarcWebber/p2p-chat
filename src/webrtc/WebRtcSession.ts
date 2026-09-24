@@ -185,8 +185,8 @@ export class WebRtcSession {
     else run();
   }
 
-  send(wire: EncryptedWire) {
-    const result = this.sendQueue.then(() => this.sendNow(wire));
+  send(wire: EncryptedWire, allowed = () => true) {
+    const result = this.sendQueue.then(() => this.sendNow(wire, allowed));
     this.sendQueue = result.then(() => undefined, () => undefined);
     return result;
   }
@@ -408,9 +408,9 @@ export class WebRtcSession {
     };
   }
 
-  private async sendNow(wire: EncryptedWire) {
+  private async sendNow(wire: EncryptedWire, allowed: () => boolean) {
     const channel = this.channel;
-    if (!channel || channel.readyState !== "open" || this.phase === "disposed") return false;
+    if (!channel || channel.readyState !== "open" || this.phase === "disposed" || !allowed()) return false;
     let packets: string[];
     try {
       packets = encodeEncryptedWire(wire);
@@ -432,6 +432,7 @@ export class WebRtcSession {
           channel.bufferedAmount > CHAT_POLICY.dataChannelHighWaterMarkBytes
           && !await this.waitForWritableChannel(channel)
         ) return false;
+        if (!allowed()) return false;
         channel.send(packet);
       }
       return true;

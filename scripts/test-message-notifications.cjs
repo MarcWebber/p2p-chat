@@ -144,7 +144,7 @@ async function testHiddenAndPreference() {
 
 async function testRuntimeOnlyNotifiesNewMessages() {
   const historyMessage = { id: "old", kind: "text", content: "old message", createdAt: 1 };
-  const context = vm.createContext({ console, crypto: webcrypto, URL, Blob, TextEncoder, TextDecoder, atob, btoa });
+  const context = vm.createContext({ console, crypto: webcrypto, URL, Blob, TextEncoder, TextDecoder, atob, btoa, clearTimeout });
   const mocks = {
     "@/src/crypto/messageCrypto": { randomToken: () => "test-participant", createMessageCrypto: () => ({
       decryptPayload: async (wire) => wire.payload, decrypt: async (wire) => wire.payload,

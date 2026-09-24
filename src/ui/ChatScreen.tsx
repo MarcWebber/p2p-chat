@@ -6,6 +6,7 @@ import { ChatSidebar } from "@/src/ui/ChatSidebar";
 import { MessageComposer } from "@/src/ui/MessageComposer";
 import { MessageList } from "@/src/ui/MessageList";
 import { RoomSettingsDialog } from "@/src/ui/RoomSettingsDialog";
+import { SharedFilesPanel } from "@/src/ui/SharedFilesPanel";
 
 export function ChatScreen(props: TwoOnlyChatController) {
   const [editingRoomId, setEditingRoomId] = useState("");
@@ -23,23 +24,26 @@ export function ChatScreen(props: TwoOnlyChatController) {
         onEditRoom={setEditingRoomId}
       />
       <section className="chat-main">
-        <ChatHeader
-          profile={props.profile}
-          connection={props.connection}
-          connectionMode={props.connectionMode}
-          safetyCode={props.safetyCode}
-          copied={props.copied}
-          onCopyInvite={props.copyInvite}
-          onReconnect={props.reconnect}
-          onCreateRoom={props.createFreshRoom}
-          conversations={props.conversations}
-          activeRoomId={props.activeRoomId}
-          onOpenRoom={props.openStoredRoom}
-          onEditRoom={setEditingRoomId}
-          onProfileChange={props.updateProfile}
-          notificationStatus={props.notificationStatus}
-          onToggleNotifications={props.toggleNotifications}
-        />
+        <div>
+          <ChatHeader
+            profile={props.profile}
+            connection={props.connection}
+            connectionMode={props.connectionMode}
+            safetyCode={props.safetyCode}
+            copied={props.copied}
+            onCopyInvite={props.copyInvite}
+            onReconnect={props.reconnect}
+            onCreateRoom={props.createFreshRoom}
+            conversations={props.conversations}
+            activeRoomId={props.activeRoomId}
+            onOpenRoom={props.openStoredRoom}
+            onEditRoom={setEditingRoomId}
+            onProfileChange={props.updateProfile}
+            notificationStatus={props.notificationStatus}
+            onToggleNotifications={props.toggleNotifications}
+          />
+          <SharedFilesPanel key={props.activeRoomId} sharedFiles={props.sharedFiles} files={props.files} connection={props.connection} />
+        </div>
         <MessageList
           profile={props.profile}
           peerProfile={props.peerProfile}

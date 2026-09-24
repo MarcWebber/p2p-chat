@@ -47,6 +47,7 @@ import {
 } from "@/src/storage/chatStorage";
 import { WebRtcSession } from "@/src/webrtc/WebRtcSession";
 import { resolveIceConfiguration } from "@/src/webrtc/iceConfig";
+import { SharedFiles, type SharedFilesState } from "@/src/chat/sharedFiles";
 
 export type RoomRuntimeSnapshot = {
   roomId: string;
@@ -56,6 +57,7 @@ export type RoomRuntimeSnapshot = {
   peerProfile?: ChatProfile;
   notice: string;
   diagnostics: ConnectionDiagnostics;
+  files: SharedFilesState;
 };
 
 type RoomRuntimeOptions = {
@@ -125,6 +127,21 @@ export class RoomRuntime {
   private localProfile: ProfileMetadata;
   private peerProfile: ProfileMetadata | undefined;
   private snapshot: RoomRuntimeSnapshot;
+  readonly sharedFiles = new SharedFiles({
+    send: async (payload, allowed = () => true) => {
+      try {
+        const wire = await this.messageCrypto.encryptPayload(crypto.randomUUID(), payload);
+        return !this.disposed && Boolean(await this.session?.send(wire, allowed));
+      } catch { return false; }
+    },
+    sendFile: (file, allowed, id) => this.sendAttachment("file", file, this.localProfile.profile, allowed, id),
+    cancelFile: (id) => {
+      this.deletedMessageIds.add(id);
+      if (this.incomingAttachments.has(id)) this.failIncomingAttachment(id);
+    },
+    change: (files) => this.publish({ files }),
+    notice: (notice) => this.setNotice(notice),
+  });
 
   constructor(private readonly options: RoomRuntimeOptions) {
     this.roomId = options.room.roomId;
@@ -141,6 +158,7 @@ export class RoomRuntime {
       peerProfile: this.peerProfile?.profile,
       notice: "",
       diagnostics: this.diagnostics,
+      files: this.sharedFiles.state,
     };
   }
 
@@ -182,6 +200,7 @@ export class RoomRuntime {
             const becameConnected = this.snapshot.connection !== "connected"
               && connection === "connected";
             if (this.snapshot.connection === "connected" && connection !== "connected") {
+              this.sharedFiles.reset();
               this.cancelActiveTransfers();
             }
             this.publish({ connection, connectionMode });
@@ -249,9 +268,14 @@ export class RoomRuntime {
     return delivered;
   }
 
-  async sendAttachment(kind: AttachmentMessageKind, file: File, profile: ChatProfile) {
-    if (this.disposed) return false;
-    const id = crypto.randomUUID();
+  async sendAttachment(
+    kind: AttachmentMessageKind,
+    file: File,
+    profile: ChatProfile,
+    allowed = () => true,
+    id = crypto.randomUUID(),
+  ) {
+    if (this.disposed || !allowed()) return false;
     const fileName = file.name || (kind === "image" ? "图片" : "未命名文件");
     const descriptor: AttachmentDescriptor = {
       id,
@@ -281,7 +305,7 @@ export class RoomRuntime {
       if (
         this.disposed
         || transferEpoch !== this.transferEpoch
-        || !await this.session?.send(startWire)
+        || !await this.session?.send(startWire, allowed)
       ) throw new Error("attachment connection unavailable");
 
       let lastProgress = 0;
@@ -291,7 +315,7 @@ export class RoomRuntime {
         if (
           this.disposed
           || transferEpoch !== this.transferEpoch
-          || !await this.session?.send(wire)
+          || !await this.session?.send(wire, allowed)
         ) throw new Error("attachment transfer interrupted");
         const progress = (index + 1) / start.total;
         if (progress === 1 || progress - lastProgress >= 0.05) {
@@ -400,6 +424,7 @@ export class RoomRuntime {
 
   dispose() {
     if (this.disposed) return;
+    this.sharedFiles.reset();
     this.diagnostics.report({
       stage: "client",
       code: "client.bootstrap.dispose",
@@ -425,6 +450,7 @@ export class RoomRuntime {
     }
     if (this.disposed) return;
     try {
+      if (await this.sharedFiles.receive(payload)) return;
       if (isAttachmentStartPayload(payload)) {
         this.acceptAttachmentStart(payload);
         return;

@@ -279,10 +279,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   height: 100vh;
   overflow: hidden;
   display: grid;
-  grid-template-rows: 64px minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   background: @chat-bg;
 }
 .chat-header {
+  min-height: 64px;
   padding: 0 22px;
   display: flex;
   align-items: center;
@@ -292,6 +293,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: rgba(255,255,255,0.9);
 }
 .chat-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.shared-files { padding: 8px 14px; border-bottom: 1px solid @line; background: white; font-size: 12px; overflow-wrap: anywhere; }
+.shared-files summary { cursor: pointer; color: @blue-dark; }
+.shared-files button { margin: 6px 6px 0 0; padding: 4px 7px; border: 1px solid @line; border-radius: 5px; background: white; cursor: pointer; text-align: left; overflow-wrap: anywhere; max-width: 100%; }
+.shared-files button:disabled { opacity: 0.5; cursor: default; }
+.shared-files ul { max-height: 22vh; overflow: auto; list-style: none; margin: 4px 0; padding: 0; }
+.shared-files p { margin: 6px 0; color: @muted; }
 .member-count {
   margin-left: 4px;
   padding: 1px 5px;
